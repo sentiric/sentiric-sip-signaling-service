@@ -1,0 +1,14 @@
+{
+  "name": "sentiric-sip-signaling-service",
+  "version": "0.1.0",
+  "description": "Handles SIP call signaling for the Sentiric platform.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dgram": "^1.0.1"
+  },
+  "author": "Sentiric Team",
+  "license": "MIT"
+}
