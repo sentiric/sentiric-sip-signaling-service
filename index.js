@@ -1,9 +1,9 @@
 const dgram = require('dgram');
 const axios = require('axios');
 
-// Ortam değişkenlerinden servis URL'lerini al
-const USER_SERVICE_URL = process.env.USER_SERVICE_URL || 'http://user-service:3001';
-const DIALPLAN_SERVICE_URL = process.env.DIALPLAN_SERVICE_URL || 'http://dialplan-service:3002';
+// Ortam değişkenlerinden servis URL'lerini alıyoruz.
+const USER_SERVICE_URL = process.env.USER_SERVICE_URL;
+const DIALPLAN_SERVICE_URL = process.env.DIALPLAN_SERVICE_URL;
 
 const SIP_PORT = process.env.SIP_PORT || 5060;
 const SIP_HOST = '0.0.0.0';
@@ -17,8 +17,8 @@ const getHeader = (message, name) => {
   return match ? match[1].trim() : '';
 };
 
-// SIP URI'sinden kullanıcı adını (örn: <sip:1001@...>) çıkaran fonksiyon
-const getUsernameFromUri = (uri) => {
+// SIP URI'sinden kullanıcı adını (örn: <sip:1001@...>) veya numarayı çıkaran fonksiyon
+const getPrincipalFromUri = (uri) => {
   const match = uri.match(/sip:([^@;]+)/);
   return match ? match[1] : null;
 }
@@ -28,7 +28,7 @@ server.on('message', async (msg, rinfo) => {
   const message = msg.toString();
   console.log(`\n--- Yeni SIP Mesajı Alındı: ${rinfo.address}:${rinfo.port} ---`);
 
-  // Sadece INVITE isteklerini işliyoruz
+  // Sadece INVITE (arama başlatma) isteklerini işliyoruz. Diğerlerini (REGISTER vb.) şimdilik göz ardı ediyoruz.
   if (!message.startsWith('INVITE')) {
     console.log("-> Mesaj INVITE değil, şimdilik göz ardı ediliyor.");
     return;
@@ -36,14 +36,14 @@ server.on('message', async (msg, rinfo) => {
 
   console.log('📞 Gelen arama (INVITE) tespit edildi. İşlem başlatılıyor...');
   
-  // Gelen isteğin temel başlıklarını alıyoruz
+  // Gelen isteğin başlıklarından arayan ve aranan bilgilerini alıyoruz.
   const fromUri = getHeader(message, 'From');
   const toUri = getHeader(message, 'To');
   
-  const fromUser = getUsernameFromUri(fromUri);
-  const toUser = getUsernameFromUri(toUri);
+  const fromUser = getPrincipalFromUri(fromUri);   // Arayan kullanıcı/numara
+  const toDestination = getPrincipalFromUri(toUri); // Aranan numara
 
-  // 1. Adım: User Service'e danışarak arayanın geçerli bir kullanıcı olup olmadığını kontrol et
+  // 1. Adım: User Service'e danışarak arayanın geçerli bir kullanıcı olup olmadığını kontrol et.
   try {
     console.log(`[1/3] 👤 User Service'e soruluyor: Kullanıcı '${fromUser}' geçerli mi?`);
     const userResponse = await axios.get(`${USER_SERVICE_URL}/users/${fromUser}`);
@@ -51,32 +51,37 @@ server.on('message', async (msg, rinfo) => {
     if (userResponse.status === 200) {
       console.log(`--> ✅ Kullanıcı '${fromUser}' bulundu. (${userResponse.status})`);
     }
-    // Not: Gerçek bir sistemde burada kimlik doğrulaması (digest auth) yapılır.
-    // Şimdilik sadece kullanıcının varlığını kontrol ediyoruz.
-
   } catch (error) {
-    console.error(`--> ❌ Kullanıcı '${fromUser}' bulunamadı veya User Service'e ulaşılamadı.`);
-    // Burada 401 Unauthorized veya 404 Not Found gibi bir SIP hatası dönebiliriz.
-    // Şimdilik devam ediyoruz.
-    return;
+    if (error.response && error.response.status === 404) {
+      console.error(`--> ❌ Kullanıcı '${fromUser}' bulunamadı. Çağrı reddediliyor.`);
+    } else {
+      console.error(`--> ❌ User Service'e ulaşılamadı veya bir hata oluştu: ${error.message}`);
+    }
+    // Tanınmayan kullanıcı veya servis hatası durumunda işlemi sonlandır.
+    // Gerçek bir sistemde burada 401/404/500 gibi SIP hata kodları döneriz.
+    return; 
   }
 
-  // 2. Adım: Dialplan Service'e danışarak bu arama için ne yapılması gerektiğini sor
+  // 2. Adım: Dialplan Service'e danışarak bu arama için ne yapılması gerektiğini sor.
   try {
-    console.log(`[2/3] 🗺️  Dialplan Service'e soruluyor: Hedef '${toUser}' için plan nedir?`);
-    const dialplanResponse = await axios.get(`${DIALPLAN_SERVICE_URL}/dialplan/${toUser}`);
+    console.log(`[2/3] 🗺️  Dialplan Service'e soruluyor: Hedef '${toDestination}' için plan nedir?`);
+    const dialplanResponse = await axios.get(`${DIALPLAN_SERVICE_URL}/dialplan/${toDestination}`);
 
     if (dialplanResponse.status === 200) {
       console.log(`--> ✅ Yönlendirme planı bulundu. (${dialplanResponse.status})`);
       console.log('--> Alınan Plan:', dialplanResponse.data);
     }
   } catch (error) {
-    console.error(`--> ❌ Hedef '${toUser}' için yönlendirme planı bulunamadı veya Dialplan Service'e ulaşılamadı.`);
-    // Burada 404 Not Found SIP hatası dönebiliriz.
+    if (error.response && error.response.status === 404) {
+        console.error(`--> ❌ Hedef '${toDestination}' için yönlendirme planı bulunamadı. Çağrı reddediliyor.`);
+    } else {
+        console.error(`--> ❌ Dialplan Service'e ulaşılamadı veya bir hata oluştu: ${error.message}`);
+    }
+    // Yönlendirme kuralı yoksa veya servis hatası varsa işlemi sonlandır.
     return;
   }
 
-  // 3. Adım: Tüm kontroller başarılıysa, çağrıyı kabul et (200 OK)
+  // 3. Adım: Tüm kontroller başarılıysa, çağrıyı kabul et (200 OK).
   console.log(`[3/3] ✅ Tüm kontroller başarılı. Çağrı kabul ediliyor.`);
   const via = getHeader(message, 'Via');
   const from = getHeader(message, 'From');
