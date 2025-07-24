@@ -1,13 +1,23 @@
-
 services:
   sip-signaling:
     image: ${DOCKER_REGISTRY:-ghcr.io/sentiric}/sentiric-sip-signaling-service:${TAG:-latest}
-    build: { context: . }
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: sentiric_sip_signaling
-    env_file: [./.env]
-    ports: ["${SIP_PORT:-5060}:${SIP_PORT:-5060}/udp"]
-    networks: [sentiric-net]
+    env_file:
+      - ./.env
+    ports:
+      - "${SIP_PORT:-5060}:${SIP_PORT:-5060}/udp"
+    networks:
+      - sentiric-net
     restart: always
+    depends_on:
+      - user-service
+      - dialplan-service
+      - media-service
+      - rabbitmq
+
 networks:
   sentiric-net:
     name: ${NETWORK_NAME:-sentiric-net}

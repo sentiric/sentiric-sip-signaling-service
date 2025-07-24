@@ -1,17 +1,19 @@
-# Adım 1: Bağımlılıkları kurmak için Node.js'in hafif bir versiyonunu kullan.
-FROM node:18-alpine AS builder
+# --- AŞAMA 1: Derleme (Builder) ---
+FROM rust:1.79 as builder
+RUN apt-get update && apt-get install -y protobuf-compiler clang libclang-dev
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release
+RUN rm -f target/release/deps/sentiric_sip_signaling_service*
+COPY src ./src
+COPY build.rs ./
+COPY ../sentiric-core-interfaces ./sentiric-core-interfaces
+RUN cargo build --release
 
-# Adım 2: Sadece gerekli dosyaları içeren minimal bir imaj oluştur.
-FROM node:18-alpine
+# --- AŞAMA 2: Çalıştırma (Runtime) ---
+FROM gcr.io/distroless/cc-debian12
 WORKDIR /app
-COPY --from=builder /app/node_modules ./node_modules
-COPY . .
-
-# Bu servis UDP 5060 portunu dışarıya açacak.
+COPY --from=builder /app/target/release/sentiric-sip-signaling-service .
 EXPOSE 5060/udp
-
-# Konteyner başladığında çalıştırılacak komut.
-CMD [ "npm", "start" ]
+ENTRYPOINT ["/app/sentiric-sip-signaling-service"]

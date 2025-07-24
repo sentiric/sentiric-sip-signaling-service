@@ -1,58 +1,86 @@
-# Sentiric SIP Signaling Service
+# 🛡️ Sentiric SIP Signaling Service
 
-**Description:** This is the core service for managing SIP call signaling (call setup, management, and termination) within the Sentiric platform. It acts as the orchestrator for call flows by interacting with other specialized microservices.
+**Description:** This is the core edge service for managing SIP call signaling (setup, management, and termination) within the Sentiric platform. Built with **Rust** for high performance, memory safety, and low-level network control, it acts as the primary orchestrator for the synchronous phase of call flows by interacting with other specialized microservices.
 
 **Core Responsibilities:**
-*   **SIP Message Processing:** Listening for, parsing, validating, and building all types of SIP messages (INVITE, ACK, BYE, CANCEL, REGISTER, OPTIONS, etc.).
-*   **Call Session Lifecycle Management:** Managing the state and progression of active call sessions from initiation to termination.
-*   **SIP Transport Layer:** Handling incoming and outgoing SIP traffic over UDP, TCP, and TLS (SIPS).
-*   **Call Flow Orchestration:** Coordinating various steps of a call by making API calls to:
-    *   `sentiric-user-service` for user authentication and registration management.
+*   **High-Performance SIP Processing:** Listens for, parses, and validates SIP messages over UDP. It is specifically hardened to handle real-world telecommunication challenges, such as correctly managing `Via` and `Record-Route` headers from upstream proxies.
+*   **Synchronous Call Flow Orchestration:** Rapidly coordinates the initial steps of a call by making **gRPC** calls to:
+    *   `sentiric-user-service` for user authentication.
     *   `sentiric-dialplan-service` for dynamic call routing decisions.
-    *   `sentiric-media-service` for allocating and managing real-time media (RTP/SRTP) sessions.
-*   **CDR Event Publishing:** Asynchronously publishing critical call lifecycle events (e.g., call initiated, answered, terminated) to the `sentiric-cdr-service` for detailed record-keeping.
-*   **TLS Support:** Managing TLS certificates and secure connections for SIPS.
+    *   `sentiric-media-service` for allocating real-time media (RTP) sessions.
+*   **Asynchronous Event Publishing:** After successfully establishing a call, it decouples the long-running AI dialogue logic by publishing a `call.started` event to a **RabbitMQ** message queue, making the platform resilient and scalable.
+*   **Security:** Acts as the first line of defense for the platform's real-time communication infrastructure.
 
-**Technologies:**
-*   Node.js (for its event-driven architecture and existing codebase foundations)
-*   UDP/TCP/TLS Sockets
-*   Internal API Client Modules (for communication with other Sentiric services)
+**Technology Stack:**
+*   **Language:** Rust
+*   **Async Runtime:** Tokio
+*   **Inter-Service Communication:**
+    *   **gRPC (with Tonic):** For fast, type-safe, synchronous commands.
+    *   **AMQP (with Lapin):** For resilient, asynchronous eventing via RabbitMQ.
+*   **Containerization:** Docker (Multi-stage builds for minimal, secure images).
 
-**API Interactions (As a Client of other Sentiric Services):**
-*   **`sentiric-user-service`**: For user authentication, querying user registration status, and updating contact information.
-*   **`sentiric-dialplan-service`**: For obtaining call routing decisions based on dialed numbers and caller context.
-*   **`sentiric-media-service`**: For requesting RTP/SRTP session creation, proxying media streams, and triggering media actions like playing announcements.
-*   **`sentiric-cdr-service`**: Publishes call events to this service, typically via a message queue (e.g., Kafka, RabbitMQ) for asynchronous processing.
+**API Interactions (Client Of):**
+*   **`sentiric-user-service` (gRPC):** For user authentication.
+*   **`sentiric-dialplan-service` (gRPC):** For obtaining call routing decisions.
+*   **`sentiric-media-service` (gRPC):** For requesting RTP session creation.
+*   **`RabbitMQ` (AMQP):** Publishes `call.started` events to decouple the agent/AI workflow.
 
-**Local Development:**
-1.  **Clone this repository:**
+## Getting Started
+
+### Prerequisites
+- Docker and Docker Compose
+- Git
+- All Sentiric repositories cloned into a single workspace directory.
+
+### Local Development & Platform Setup
+This service is not designed to run standalone. It is an integral part of the Sentiric platform and must be run via the central orchestrator in the `sentiric-infrastructure` repository.
+
+1.  **Clone all repositories:**
     ```bash
+    # In your workspace directory
+    git clone https://github.com/sentiric/sentiric-infrastructure.git
+    git clone https://github.com/sentiric/sentiric-core-interfaces.git
     git clone https://github.com/sentiric/sentiric-sip-signaling-service.git
+    # ... clone other required services
     ```
-2.  **Navigate into the directory:**
+
+2.  **Initialize Submodules:** This service depends on `sentiric-core-interfaces` using a Git submodule.
     ```bash
     cd sentiric-sip-signaling-service
+    git submodule update --init --recursive
+    cd .. 
     ```
-3.  **Install dependencies:**
+
+3.  **Configure Environment:**
     ```bash
-    npm install
+    cd sentiric-infrastructure
+    cp .env.local.example .env
+    # Open .env and set PUBLIC_IP and other variables
     ```
-4.  **Configure Environment Variables:** Create a `.env` file in the root directory by copying `.env.example`. This file will contain configurations such as SIP listening IPs/ports, public IP, and crucial URLs for dependent services (e.g., `USER_SERVICE_URL`, `DIALPLAN_SERVICE_URL`, `MEDIA_SERVICE_URL`, `MESSAGE_QUEUE_URL`).
-5.  **Start the service:**
+
+4.  **Run the platform:** The central Docker Compose file will automatically build and run this service.
     ```bash
-    npm start
-    # or for development with hot-reloads:
-    npm run dev
+    # From the sentiric-infrastructure directory
+    docker compose up --build -d
     ```
 
-**Configuration:**
-Refer to the `config/` directory (if applicable) and the `.env.example` file for detailed configurable options. Ensure all necessary API endpoints for other services are correctly set up.
+5.  **View Logs:**
+    ```bash
+    docker compose logs -f sip-signaling
+    ```
 
-**Deployment:**
-This service is designed for containerized deployment (e.g., Docker, Kubernetes). Refer to the `sentiric-infrastructure` repository for comprehensive deployment configurations, including Dockerfiles and Kubernetes manifests.
+## Configuration
 
-**Contributing:**
+All configuration is managed via environment variables passed from the `sentiric-infrastructure` repository's `.env` file. See the `.env.local.example` file in that repository for a complete list.
+
+## Deployment
+
+This service is designed for containerized deployment. The multi-stage `Dockerfile` ensures a small and secure production image. The CI/CD pipeline in `.github/workflows/docker-ci.yml` automatically builds and pushes the image to the GitHub Container Registry (`ghcr.io`).
+
+## Contributing
+
 We welcome contributions! Please refer to the [Sentiric Governance](https://github.com/sentiric/sentiric-governance) repository for detailed coding standards, contribution guidelines, and the overall project vision.
 
-**License:**
-This project is licensed under the [License](LICENSE).
+## License
+
+This project is licensed under the [MIT License](LICENSE).
