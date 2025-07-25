@@ -83,4 +83,4 @@ We welcome contributions! Please refer to the [Sentiric Governance](https://gith
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [License](LICENSE).

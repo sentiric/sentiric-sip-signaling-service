@@ -8,7 +8,11 @@ use rand::Rng;
 use tracing::{info, error, debug, instrument, Level};
 use tracing_subscriber::FmtSubscriber;
 use tonic::transport::Channel;
+// HATA 2 İÇİN DÜZELTME: ConfirmSelectOptions kaldırıldı, gerek yok.
 use lapin::{Connection, ConnectionProperties, options::*, types::FieldTable, BasicProperties, Channel as LapinChannel};
+// HATA 1 İÇİN DÜZELTME: chrono ve serde_json eklendi.
+use chrono::Utc;
+use serde_json::json;
 
 // build.rs tarafından 'OUT_DIR' içinde üretilen modülleri import ediyoruz
 pub mod sentiric {
@@ -35,19 +39,31 @@ struct AppConfig {
     rabbitmq_url: String,
 }
 
+// src/main.rs içindeki AppConfig implementasyonu
+
 impl AppConfig {
     fn load_from_env() -> Result<Self, Box<dyn std::error::Error>> {
         let sip_host = env::var("SIP_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let sip_port = env::var("SIP_PORT")?.parse::<u16>()?;
+        let sip_port_str = env::var("SIP_PORT").unwrap_or_else(|_| "5060".to_string());
+        
+        // --- DAYANIKLI HALE GETİRİLEN BÖLÜM ---
+        let sip_port = sip_port_str.parse::<u16>()
+            .map_err(|e| format!("Geçersiz SIP_PORT değeri: '{}'. Bir sayı olmalı. Hata: {}", sip_port_str, e))?;
+        
         let sip_listen_addr = format!("{}:{}", sip_host, sip_port).parse()?;
         
         Ok(AppConfig {
             sip_listen_addr,
-            sip_public_ip: env::var("PUBLIC_IP")?,
-            user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
-            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
-            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
-            rabbitmq_url: env::var("RABBITMQ_URL")?,
+            sip_public_ip: env::var("PUBLIC_IP")
+                .map_err(|_| "Gerekli ortam değişkeni ayarlanmamış: PUBLIC_IP (ör: 88.55.11.22)".to_string())?,
+            user_service_url: env::var("USER_SERVICE_GRPC_URL")
+                .map_err(|_| "Gerekli ortam değişkeni ayarlanmamış: USER_SERVICE_GRPC_URL (ör: http://user-service:50053)".to_string())?,
+            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")
+                .map_err(|_| "Gerekli ortam değişkeni ayarlanmamış: DIALPLAN_SERVICE_GRPC_URL (ör: http://dialplan-service:50054)".to_string())?,
+            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")
+                .map_err(|_| "Gerekli ortam değişkeni ayarlanmamış: MEDIA_SERVICE_GRPC_URL (ör: http://media-service:50052)".to_string())?,
+            rabbitmq_url: env::var("RABBITMQ_URL")
+                .map_err(|_| "Gerekli ortam değişkeni ayarlanmamış: RABBITMQ_URL (ör: amqp://user:pass@rabbitmq:5672)".to_string())?,
         })
     }
 }
@@ -62,6 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rabbit_conn = Connection::connect(&config.rabbitmq_url, ConnectionProperties::default()).await?;
     let rabbit_channel = Arc::new(rabbit_conn.create_channel().await?);
+    
+    // HATA 2 İÇİN DÜZELTME: Confirm modunu kanal oluşturulduktan hemen sonra etkinleştiriyoruz.
+    rabbit_channel.confirm_select(ConfirmSelectOptions::default()).await?;
+
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
     info!("RabbitMQ bağlantısı başarıyla kuruldu ve '{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
 
@@ -143,7 +163,6 @@ async fn handle_sip_request(
         let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
         headers.insert("To".to_string(), format!("{}{}", to_header, to_tag));
 
-        // Bazı SIP istemcileri için 200 OK'dan önce 180 Ringing göndermek uyumluluğu artırır.
         sock.send_to(create_response("180 Ringing", &headers, None, &config).as_bytes(), addr).await?;
         sleep(Duration::from_millis(100)).await;
 
@@ -156,24 +175,27 @@ async fn handle_sip_request(
         info!(port = rtp_port, "Arama başarıyla cevaplandı!");
         
         // Adım 5: RabbitMQ'ya Olay Yayınla
-        let event_payload = serde_json::json!({
+        let event_payload = json!({
             "eventType": "call.started",
             "callId": call_id,
             "from": from_uri,
             "to": to_uri,
             "media": { "host": config.sip_public_ip, "port": rtp_port },
-            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "timestamp": Utc::now().to_rfc3339(),
         });
 
-        rabbit_channel.basic_publish(
+        // HATA 2 İÇİN DÜZELTME: confirm() metodu yerine, publish'ten dönen confirmation'ı bekliyoruz.
+        let confirmation = rabbit_channel.basic_publish(
             "",
             RABBITMQ_QUEUE_NAME,
             BasicPublishOptions::default(),
             event_payload.to_string().as_bytes(),
             BasicProperties::default().with_delivery_mode(2), // 2 = Persistent
-        ).await?.confirm(ConfirmSelectOptions::default()).await?;
+        ).await?;
         
-        info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı.");
+        confirmation.await?; // Sunucudan onayı bekle
+
+        info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı ve onaylandı.");
     }
     Ok(())
 }
@@ -197,7 +219,6 @@ fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     }
 
     if !via_headers.is_empty() {
-        // En üstteki Via başlığını alıyoruz, proxy'ler genellikle bu sırayı bekler.
         headers.insert("Via".to_string(), via_headers.join(","));
         if !record_route_headers.is_empty() {
             headers.insert("Record-Route".to_string(), record_route_headers.join(","));
@@ -212,9 +233,6 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
     let body = sdp.unwrap_or("");
     let content_length = body.len();
 
-    // RFC3261'e göre, gelen isteğin Record-Route başlıkları, yanıtta ters sırada Route başlıkları olarak geri gönderilmelidir.
-    // Ancak birçok modern proxy, Record-Route'un yanıtta da aynen gönderilmesini bekler.
-    // Centiric'teki tecrübenize göre bu kısmı (aynen geri gönderme) koruyoruz.
     let record_route_line = match headers.get("Record-Route") {
         Some(routes) => format!("Record-Route: {}\r\n", routes),
         None => String::new(),

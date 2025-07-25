@@ -12,11 +12,6 @@ services:
     networks:
       - sentiric-net
     restart: always
-    depends_on:
-      - user-service
-      - dialplan-service
-      - media-service
-      - rabbitmq
 
 networks:
   sentiric-net:
