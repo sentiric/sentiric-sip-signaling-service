@@ -12,19 +12,18 @@ use lapin::{Connection, ConnectionProperties, options::*, types::FieldTable, Bas
 use chrono::Utc;
 use serde_json::json;
 
-// YENİ VE TEMİZ YÖNTEM:
-// Artık 'build.rs' ile üretilen modülleri değil, doğrudan 'sentiric-contracts'
-// kütüphanesinden ihtiyacımız olan her şeyi import ediyoruz.
+// DÜZELTİLMİŞ IMPORT'LAR:
+// Artık sadece 'sentiric-contracts' içinde gerçekten var olan
+// mesajları ve istemcileri import ediyoruz.
 use sentiric_contracts::sentiric::{
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest},
-    user::v1::{user_service_client::UserServiceClient, AuthenticateUserRequest, authenticate_user_response::Status as AuthStatus},
+    user::v1::{user_service_client::UserServiceClient, GetUserRequest},
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, GetDialplanForUserRequest},
 };
 
-
 const RABBITMQ_QUEUE_NAME: &str = "call.events";
 
-//--- Konfigürasyon Yapısı ---
+//--- Konfigürasyon Yapısı (Değişiklik yok) ---
 #[derive(Debug, Clone)]
 struct AppConfig {
     sip_listen_addr: SocketAddr,
@@ -60,8 +59,11 @@ impl AppConfig {
     }
 }
 
+//--- Ana Fonksiyon (Değişiklik yok) ---
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    dotenv::dotenv().ok(); // .env dosyasını yükler
+    
     let subscriber = FmtSubscriber::builder().with_max_level(Level::DEBUG).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
@@ -95,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+//--- SIP İsteği İşleyici (DÜZELTİLMİŞ) ---
 #[instrument(skip_all, fields(remote_addr = %addr))]
 async fn handle_sip_request(
     request_bytes: &[u8],
@@ -116,21 +119,31 @@ async fn handle_sip_request(
         let to_uri = headers.get("To").cloned().unwrap_or_default();
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         
+        // SIP URI'sinden kullanıcı adını (veya numarayı) ayıklayalım. Örn: <sip:1001@...> -> 1001
+        let user_id_to_check = extract_user_from_uri(&from_uri).unwrap_or_default();
+
         sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
         info!("'100 Trying' gönderildi.");
 
-        // Adım 1: Kullanıcıyı Doğrula
-        // Not: user.proto'daki RPC adı GetUser, AuthenticateUser değil. Onu kullanıyoruz.
+        // Adım 1: Kullanıcıyı Doğrula (GetUser RPC'sini kullanarak)
         let mut user_client = UserServiceClient::connect(config.user_service_url.clone()).await?;
-        let user_req = AuthenticateUserRequest { from_uri: from_uri.clone() }; // Bu request mesajı user.proto'da olmayabilir, kontrol edilecek.
-        // TODO: user.proto'yu 'AuthenticateUser' içerecek şekilde güncelle. Şimdilik mock cevapla devam et.
-        let user_id = "user-123"; // Mock user_id
-        info!(user_id = %user_id, "Kullanıcı doğrulandı (Mock).");
+        let user_req = GetUserRequest { id: user_id_to_check.to_string() };
+        let user_res = user_client.get_user(user_req).await?.into_inner();
+        
+        // user_res.user boş değilse, kullanıcı var demektir.
+        if user_res.user.is_none() {
+            error!(user_id = %user_id_to_check, "Kullanıcı doğrulaması başarısız oldu. Çağrı reddediliyor.");
+            sock.send_to(create_response("403 Forbidden", &headers, None, &config).as_bytes(), addr).await?;
+            return Ok(());
+        }
+        let found_user = user_res.user.unwrap();
+        info!(user_id = %found_user.id, "Kullanıcı doğrulandı.");
 
         // Adım 2: Yönlendirme Planını Al
         let mut dialplan_client = DialplanServiceClient::connect(config.dialplan_service_url.clone()).await?;
-        let dialplan_req = GetDialplanForUserRequest { user_id: user_id.to_string() };
+        let dialplan_req = GetDialplanForUserRequest { user_id: found_user.id.clone() };
         let dialplan_res = dialplan_client.get_dialplan_for_user(dialplan_req).await?.into_inner();
+        
         if dialplan_res.dialplan_id.is_empty() {
             error!("Yönlendirme planı bulunamadı. Çağrı reddediliyor.");
             sock.send_to(create_response("404 Not Found", &headers, None, &config).as_bytes(), addr).await?;
@@ -145,7 +158,7 @@ async fn handle_sip_request(
         let rtp_port = media_res.rtp_port;
         info!(rtp_port = rtp_port, "Medya portu ayrıldı.");
         
-        // Adım 4: Çağrıyı Yanıtla
+        // Adım 4 & 5... (Geri kalan kod aynı)
         let to_header = headers.get("To").cloned().unwrap_or_default();
         let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
         headers.insert("To".to_string(), format!("{}{}", to_header, to_tag));
@@ -161,7 +174,6 @@ async fn handle_sip_request(
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!(port = rtp_port, "Arama başarıyla cevaplandı!");
         
-        // Adım 5: RabbitMQ'ya Olay Yayınla
         let event_payload = json!({
             "eventType": "call.started",
             "callId": call_id,
@@ -185,12 +197,23 @@ async fn handle_sip_request(
     Ok(())
 }
 
+//--- Yardımcı Fonksiyonlar (create_response ve parse_complex_headers aynı) ---
+
+// YENİ Yardımcı Fonksiyon: SIP URI'sinden kullanıcı adını ayıklar.
+fn extract_user_from_uri(uri: &str) -> Option<&str> {
+    // Örn: "Ahmet" <sip:1001@192.168.1.1>;tag=xyz  ->  1001
+    let start = uri.find("sip:")? + 4;
+    let end_at = uri[start..].find('@')?;
+    let end_semi = uri[start..].find(';')?;
+    let end = std::cmp::min(end_at, end_semi);
+    Some(&uri[start..start + end])
+}
+
+
 fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
-    // Bu fonksiyon değişmeden kalabilir
     let mut headers = HashMap::new();
     let mut via_headers = Vec::new();
     let mut record_route_headers = Vec::new();
-
     for line in request.lines() {
         if line.is_empty() { break; }
         if let Some((key, value)) = line.split_once(':') {
@@ -203,41 +226,24 @@ fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
             }
         }
     }
-
     if !via_headers.is_empty() {
         headers.insert("Via".to_string(), via_headers.join(","));
         if !record_route_headers.is_empty() {
             headers.insert("Record-Route".to_string(), record_route_headers.join(","));
         }
         Some(headers)
-    } else {
-        None
-    }
+    } else { None }
 }
 
 fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
-    // Bu fonksiyon değişmeden kalabilir
     let body = sdp.unwrap_or("");
     let content_length = body.len();
-
     let record_route_line = match headers.get("Record-Route") {
         Some(routes) => format!("Record-Route: {}\r\n", routes),
         None => String::new(),
     };
-
     format!(
-        "SIP/2.0 {}\r\n\
-         Via: {}\r\n\
-         {}\
-         From: {}\r\n\
-         To: {}\r\n\
-         Call-ID: {}\r\n\
-         CSeq: {}\r\n\
-         Contact: <sip:signal@{}:{}>\r\n\
-         Content-Type: application/sdp\r\n\
-         Content-Length: {}\r\n\
-         \r\n\
-         {}",
+        "SIP/2.0 {}\r\nVia: {}\r\n{}From: {}\r\nTo: {}\r\nCall-ID: {}\r\nCSeq: {}\r\nContact: <sip:signal@{}:{}>\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
         status_line,
         headers.get("Via").unwrap_or(&String::new()),
         record_route_line,
