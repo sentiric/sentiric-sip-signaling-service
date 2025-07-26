@@ -119,11 +119,10 @@ async fn handle_sip_request(
         let to_uri = headers.get("To").cloned().unwrap_or_default();
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         
-        // SIP URI'sinden kullanıcı adını (veya numarayı) ayıklayalım. Örn: <sip:1001@...> -> 1001
+        // DÜZELTME: Artık fonksiyon String döndürdüğü için to_string() gerekmiyor.
         let user_id_to_check = extract_user_from_uri(&from_uri).unwrap_or_default();
 
         sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
-        info!("'100 Trying' gönderildi.");
 
         // Adım 1: Kullanıcıyı Doğrula (GetUser RPC'sini kullanarak)
         let mut user_client = UserServiceClient::connect(config.user_service_url.clone()).await?;
@@ -199,14 +198,23 @@ async fn handle_sip_request(
 
 //--- Yardımcı Fonksiyonlar (create_response ve parse_complex_headers aynı) ---
 
-// YENİ Yardımcı Fonksiyon: SIP URI'sinden kullanıcı adını ayıklar.
-fn extract_user_from_uri(uri: &str) -> Option<&str> {
-    // Örn: "Ahmet" <sip:1001@192.168.1.1>;tag=xyz  ->  1001
-    let start = uri.find("sip:")? + 4;
-    let end_at = uri[start..].find('@')?;
-    let end_semi = uri[start..].find(';')?;
-    let end = std::cmp::min(end_at, end_semi);
-    Some(&uri[start..start + end])
+// YENİ ve DAHA SAĞLAM Yardımcı Fonksiyon
+fn extract_user_from_uri(uri: &str) -> Option<String> {
+    // Örnek: "Azmi Sahin" <sip:+905548777858@127.0.0.1>;tag=...
+    // Bu string içinden sadece rakamları alıp birleştirecek.
+    // Sonuç: "905548777858"
+    
+    // SIP URI'sinin başlangıcını bul
+    if let Some(start_index) = uri.find("sip:") {
+        // 'sip:' sonrasından başla
+        let relevant_part = &uri[start_index..];
+        // Sadece rakam karakterlerini topla
+        let numbers: String = relevant_part.chars().filter(|c| c.is_digit(10)).collect();
+        if !numbers.is_empty() {
+            return Some(numbers);
+        }
+    }
+    None
 }
 
 

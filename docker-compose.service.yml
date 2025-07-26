@@ -5,6 +5,15 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sentiric_sip_signaling
+    environment:
+      # Rust kodumuz bu değişkenleri bekliyor, .env'den direkt alıyoruz.
+      - SIP_HOST=0.0.0.0
+      - SIP_PORT=${SIP_PORT}
+      - PUBLIC_IP=${PUBLIC_IP}
+      - USER_SERVICE_GRPC_URL=${USER_SERVICE_GRPC_URL}
+      - DIALPLAN_SERVICE_GRPC_URL=${DIALPLAN_SERVICE_GRPC_URL}
+      - MEDIA_SERVICE_GRPC_URL=${MEDIA_SERVICE_GRPC_URL}
+      - RABBITMQ_URL=${RABBITMQ_URL}    
     env_file:
       - ./.env
     ports:
