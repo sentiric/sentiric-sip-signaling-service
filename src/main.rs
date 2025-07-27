@@ -1,9 +1,12 @@
-use std::collections::HashMap;
+// DOSYA: sentiric-sip-signaling-service/src/main.rs (YENİ VE GÜNCELLENMİŞ VERSİYON)
+
+use std::collections::{HashMap, HashSet}; // HashSet'i de ekliyoruz
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::time::{sleep, Duration};
+use tokio::sync::Mutex; // Thread-safe Mutex için
+use tokio::time::{sleep, Duration, Instant};
 use rand::Rng;
 use tracing::{info, error, debug, instrument, warn};
 use tracing_subscriber::EnvFilter;
@@ -22,6 +25,12 @@ use sentiric_contracts::sentiric::{
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9]+)@").unwrap());
 const RABBITMQ_QUEUE_NAME: &str = "call.events";
+
+// --- YENİ EKLENEN YAPI: AKTİF ÇAĞRILARI TAKİP ETMEK İÇİN ---
+// Bu yapı, hangi Call-ID'nin şu anda işlendiğini takip ederek yinelenen
+// INVITE'ların tekrar işlenmesini engelleyecek.
+type ActiveTransactions = Arc<Mutex<HashSet<String>>>;
+
 
 #[derive(Debug, Clone)]
 struct AppConfig {
@@ -80,6 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     info!("Konfigürasyon yüklendi.");
+
+    // --- YENİ EKLENEN ADIM: Aktif çağrı hafızasını oluştur ---
+    let active_transactions: ActiveTransactions = Arc::new(Mutex::new(HashSet::new()));
+
     let rabbit_channel = connect_to_rabbitmq_with_retry(&config.rabbitmq_url).await;
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
     info!("'{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
@@ -95,30 +108,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let rabbit_channel_clone = Arc::clone(&rabbit_channel);
         let request_bytes = buf[..len].to_vec();
         
+        // --- DEĞİŞİKLİK: Aktif çağrı hafızasını her yeni task'e klonla ---
+        let transactions_clone = Arc::clone(&active_transactions);
+        
         tokio::spawn(async move {
-            if let Err(e) = handle_sip_request(&request_bytes, sock_clone, addr, config_clone, rabbit_channel_clone).await {
+            if let Err(e) = handle_sip_request(
+                &request_bytes, 
+                sock_clone, 
+                addr, 
+                config_clone, 
+                rabbit_channel_clone,
+                transactions_clone // Hafızayı fonksiyona geçir
+            ).await {
                 error!(error = %e, remote_addr = %addr, "SIP isteği işlenirken akış tamamlanamadı.");
             }
         });
     }
 }
 
-#[instrument(skip(request_bytes, sock, config, rabbit_channel), fields(remote_addr = %addr, call_id))]
+// --- DEĞİŞİKLİK: Fonksiyon imzasına aktif çağrı hafızasını ekle ---
+#[instrument(skip(request_bytes, sock, config, rabbit_channel, active_transactions), fields(remote_addr = %addr, call_id))]
 async fn handle_sip_request(
     request_bytes: &[u8],
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     config: Arc<AppConfig>,
     rabbit_channel: Arc<LapinChannel>,
+    active_transactions: ActiveTransactions,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let request_str = std::str::from_utf8(request_bytes)?;
-    if !request_str.starts_with("INVITE") { return Ok(()); }
+
+    // Sadece INVITE mesajlarına odaklanıyoruz, şimdilik
+    if !request_str.starts_with("INVITE") { 
+        // İleride BYE, CANCEL vb. burada işlenecek
+        return Ok(()); 
+    }
     
     if let Some(mut headers) = parse_complex_headers(request_str) {
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
+        if call_id.is_empty() {
+            warn!("Call-ID bulunamayan INVITE paketi atlandı.");
+            return Ok(());
+        }
         tracing::Span::current().record("call_id", &call_id.as_str());
-        debug!("Gelen INVITE işleniyor...");
+        
+        // --- YENİ EKLENEN KRİTİK KONTROL ---
+        // Bu çağrı zaten işleniyor mu diye kontrol et
+        {
+            let mut transactions_guard = active_transactions.lock().await;
+            if transactions_guard.contains(&call_id) {
+                // Eğer çağrı zaten işleniyorsa, bu bir tekrar (re-transmission) paketidir.
+                // SIP standardına göre en son gönderdiğimiz yanıtı tekrar göndermemiz gerekebilir,
+                // ama şimdilik sadece loglayıp görmezden gelmek en güvenli başlangıçtır.
+                warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı ve atlandı.");
+                return Ok(());
+            }
+            // Eğer yeni bir çağrı ise, hafızaya ekle
+            transactions_guard.insert(call_id.clone());
+        } // Mutex kilidi burada serbest bırakılır
+        
+        debug!("Yeni INVITE işleniyor...");
 
+        // --- HATA DURUMUNDA VEYA AKIŞ BİTTİĞİNDE ÇAĞRIYI HAFIZADAN SİLMEK İÇİN ---
+        // `Drop` trait'ini kullanarak, bu fonksiyon hangi yoldan çıkarsa çıksın
+        // (başarılı veya hatalı), Call-ID'nin hafızadan silinmesini garanti altına alıyoruz.
+        struct TransactionGuard {
+            call_id: String,
+            transactions: ActiveTransactions,
+        }
+        impl Drop for TransactionGuard {
+            fn drop(&mut self) {
+                let transactions = self.transactions.clone();
+                let call_id = self.call_id.clone();
+                tokio::spawn(async move {
+                    info!(call_id = %call_id, "Transaction tamamlandı, hafızadan siliniyor.");
+                    transactions.lock().await.remove(&call_id);
+                });
+            }
+        }
+        let _guard = TransactionGuard {
+            call_id: call_id.clone(),
+            transactions: active_transactions.clone(),
+        };
+
+
+        // ... (Fonksiyonun geri kalanı aynı) ...
         let from_uri = headers.get("From").cloned().unwrap_or_default();
         let to_uri = headers.get("To").cloned().unwrap_or_default();
         let user_id_to_check = extract_user_from_uri(&from_uri).ok_or("From header'ından kullanıcı ID'si ayııklanamadı.")?;
@@ -184,6 +258,8 @@ async fn handle_sip_request(
     Ok(())
 }
 
+
+// ... (dosyanın geri kalanı aynı)
 fn extract_user_from_uri(uri: &str) -> Option<String> {
     USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| user_part.as_str().to_string())
 }
