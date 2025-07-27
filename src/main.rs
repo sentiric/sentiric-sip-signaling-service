@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("'{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
 
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
-    info!(address = %config.sip_listen_addr, "SIP Sunucusu başlatıldı.");
+    info!(address = %config.sip_listen_addr, "SIP Signaling başlatıldı.");
     
     let mut buf = [0; 65535];
     loop {
