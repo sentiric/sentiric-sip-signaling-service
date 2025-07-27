@@ -14,13 +14,16 @@ use serde_json::json;
 use regex::Regex;
 use once_cell::sync::Lazy;
 
+// Merkezi kontrat kütüphanesinden ihtiyacımız olan her şeyi import ediyoruz.
 use sentiric_contracts::sentiric::{
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest},
     user::v1::{user_service_client::UserServiceClient, GetUserRequest},
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, GetDialplanForUserRequest},
 };
 
+// Regex'i global ve statik olarak sadece bir kez derlemek için Lazy static kullanıyoruz.
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9]+)@").unwrap());
+
 const RABBITMQ_QUEUE_NAME: &str = "call.events";
 
 #[derive(Debug, Clone)]
@@ -52,7 +55,6 @@ impl AppConfig {
     }
 }
 
-// DAYANIKLILIK FONKSİYONU: RabbitMQ'ya bağlanmak için tekrar deneme mantığı
 async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
     let max_retries = 10;
     for i in 0..max_retries {
@@ -69,7 +71,6 @@ async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
             }
         }
     }
-    // Tüm denemeler başarısız olursa, programın başlamasının bir anlamı kalmaz.
     panic!("Maksimum deneme sayısına ulaşıldı, RabbitMQ'ya bağlanılamadı. Servis durduruluyor.");
 }
 
@@ -87,7 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     info!("Konfigürasyon yüklendi.");
 
-    // Artık 'expect' yerine dayanıklı fonksiyonumuzu çağırıyoruz.
     let rabbit_channel = connect_to_rabbitmq_with_retry(&config.rabbitmq_url).await;
     
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
@@ -158,8 +158,8 @@ async fn handle_sip_request(
         let mut media_client = MediaServiceClient::<Channel>::connect(config.media_service_url.clone()).await?;
         let media_req = AllocatePortRequest { call_id: call_id.clone() };
         let media_res = media_client.allocate_port(media_req).await?.into_inner();
-        let rtp_port = media_res.rtp_port;
-        info!(rtp_port = rtp_port, "Medya portu ayrıldı.");
+        let server_rtp_port = media_res.rtp_port;
+        info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
         
         let to_header = headers.get("To").cloned().unwrap_or_default();
         let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
@@ -167,12 +167,26 @@ async fn handle_sip_request(
         sock.send_to(create_response("180 Ringing", &headers, None, &config).as_bytes(), addr).await?;
         sleep(Duration::from_millis(100)).await;
 
-        let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, rtp_port);
+        let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
         let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
         sock.send_to(ok_response.as_bytes(), addr).await?;
-        info!(port = rtp_port, "Arama başarıyla cevaplandı!");
+        info!(port = server_rtp_port, "Arama başarıyla cevaplandı!");
         
-        let event_payload = json!({ "eventType": "call.started", "callId": call_id, "from": from_uri, "to": to_uri, "media": { "host": config.sip_public_ip, "port": rtp_port }, "timestamp": Utc::now().to_rfc3339() });
+        let caller_rtp_addr = extract_sdp_media_info(request_str)
+            .ok_or("Gelen INVITE'ın SDP bölümünden medya bilgisi alınamadı.")?;
+        info!(target_addr = %caller_rtp_addr, "Arayan tarafın RTP adresi SDP'den okundu.");
+
+        let event_payload = json!({
+            "eventType": "call.started",
+            "callId": call_id,
+            "from": from_uri,
+            "to": to_uri,
+            "media": {
+                "server_rtp_port": server_rtp_port,
+                "caller_rtp_addr": caller_rtp_addr
+            },
+            "timestamp": Utc::now().to_rfc3339(),
+        });
         let confirmation = rabbit_channel.basic_publish("", RABBITMQ_QUEUE_NAME, BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await?;
         confirmation.await?;
         info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı ve onaylandı.");
@@ -232,4 +246,26 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
         content_length,
         body
     )
+}
+
+fn extract_sdp_media_info(sip_request: &str) -> Option<String> {
+    let mut ip_addr: Option<&str> = None;
+    let mut port: Option<&str> = None;
+
+    if let Some(sdp_part) = sip_request.split("\r\n\r\n").nth(1) {
+        for line in sdp_part.lines() {
+            if line.starts_with("c=IN IP4 ") {
+                ip_addr = line.split_whitespace().nth(2);
+            }
+            if line.starts_with("m=audio ") {
+                port = line.split_whitespace().nth(1);
+            }
+        }
+    }
+
+    if let (Some(ip), Some(p)) = (ip_addr, port) {
+        Some(format!("{}:{}", ip, p))
+    } else {
+        None
+    }
 }
