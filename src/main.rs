@@ -14,16 +14,13 @@ use serde_json::json;
 use regex::Regex;
 use once_cell::sync::Lazy;
 
-// Merkezi kontrat kütüphanesinden ihtiyacımız olan her şeyi import ediyoruz.
 use sentiric_contracts::sentiric::{
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest},
     user::v1::{user_service_client::UserServiceClient, GetUserRequest},
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, GetDialplanForUserRequest},
 };
 
-// Regex'i global ve statik olarak sadece bir kez derlemek için Lazy static kullanıyoruz.
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9]+)@").unwrap());
-
 const RABBITMQ_QUEUE_NAME: &str = "call.events";
 
 #[derive(Debug, Clone)]
@@ -40,7 +37,7 @@ impl AppConfig {
     fn load_from_env() -> Result<Self, Box<dyn std::error::Error>> {
         dotenv::dotenv().ok();
         let sip_host = env::var("SIP_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let sip_port_str = env::var("SIP_PORT").unwrap_or_else(|_| "5060".to_string());
+        let sip_port_str = env::var("INTERNAL_SIP_SIGNALING_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
         let sip_listen_addr = format!("{}:{}", sip_host, sip_port).parse()?;
         
@@ -58,20 +55,16 @@ impl AppConfig {
 async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
     let max_retries = 10;
     for i in 0..max_retries {
-        match Connection::connect(url, ConnectionProperties::default()).await {
-            Ok(conn) => {
-                if let Ok(channel) = conn.create_channel().await {
-                    info!("RabbitMQ bağlantısı başarıyla kuruldu.");
-                    return Arc::new(channel);
-                }
-            }
-            Err(e) => {
-                warn!(attempt = i + 1, max_attempts = max_retries, error = %e, "RabbitMQ'ya bağlanılamadı. 5 saniye sonra tekrar denenecek...");
-                sleep(Duration::from_secs(5)).await;
+        if let Ok(conn) = Connection::connect(url, ConnectionProperties::default()).await {
+            if let Ok(channel) = conn.create_channel().await {
+                info!("RabbitMQ bağlantısı başarıyla kuruldu.");
+                return Arc::new(channel);
             }
         }
+        warn!(attempt = i + 1, max_attempts = max_retries, "RabbitMQ'ya bağlanılamadı. 5sn sonra tekrar denenecek...");
+        sleep(Duration::from_secs(5)).await;
     }
-    panic!("Maksimum deneme sayısına ulaşıldı, RabbitMQ'ya bağlanılamadı. Servis durduruluyor.");
+    panic!("Maksimum deneme sayısına ulaşıldı, RabbitMQ'ya bağlanılamadı.");
 }
 
 #[tokio::main]
@@ -82,19 +75,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = match AppConfig::load_from_env() {
         Ok(cfg) => Arc::new(cfg),
         Err(e) => {
-            error!(error = %e, "Konfigürasyon yüklenemedi. .env veya ortam değişkenlerini kontrol edin.");
+            error!(error = %e, "Konfigürasyon yüklenemedi.");
             return Err(e);
         }
     };
     info!("Konfigürasyon yüklendi.");
-
     let rabbit_channel = connect_to_rabbitmq_with_retry(&config.rabbitmq_url).await;
-    
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
     info!("'{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
 
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
-    info!(address = %config.sip_listen_addr, "SIP Sunucusu başlatıldı. Çağrılar bekleniyor...");
+    info!(address = %config.sip_listen_addr, "SIP Sunucusu başlatıldı.");
     
     let mut buf = [0; 65535];
     loop {
@@ -172,8 +163,7 @@ async fn handle_sip_request(
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!(port = server_rtp_port, "Arama başarıyla cevaplandı!");
         
-        let caller_rtp_addr = extract_sdp_media_info(request_str)
-            .ok_or("Gelen INVITE'ın SDP bölümünden medya bilgisi alınamadı.")?;
+        let caller_rtp_addr = extract_sdp_media_info(request_str).ok_or("INVITE'ın SDP bölümünden medya bilgisi alınamadı.")?;
         info!(target_addr = %caller_rtp_addr, "Arayan tarafın RTP adresi SDP'den okundu.");
 
         let event_payload = json!({
@@ -189,15 +179,13 @@ async fn handle_sip_request(
         });
         let confirmation = rabbit_channel.basic_publish("", RABBITMQ_QUEUE_NAME, BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await?;
         confirmation.await?;
-        info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı ve onaylandı.");
+        info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı.");
     }
     Ok(())
 }
 
 fn extract_user_from_uri(uri: &str) -> Option<String> {
-    USER_EXTRACT_RE.captures(uri)
-        .and_then(|caps| caps.get(1))
-        .map(|user_part| user_part.as_str().to_string())
+    USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| user_part.as_str().to_string())
 }
 
 fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
@@ -251,7 +239,6 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
 fn extract_sdp_media_info(sip_request: &str) -> Option<String> {
     let mut ip_addr: Option<&str> = None;
     let mut port: Option<&str> = None;
-
     if let Some(sdp_part) = sip_request.split("\r\n\r\n").nth(1) {
         for line in sdp_part.lines() {
             if line.starts_with("c=IN IP4 ") {
@@ -262,7 +249,6 @@ fn extract_sdp_media_info(sip_request: &str) -> Option<String> {
             }
         }
     }
-
     if let (Some(ip), Some(p)) = (ip_addr, port) {
         Some(format!("{}:{}", ip, p))
     } else {
