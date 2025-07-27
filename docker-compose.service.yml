@@ -5,24 +5,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: sentiric_sip_signaling
-    environment:
-      # Rust kodumuz bu değişkenleri bekliyor, .env'den direkt alıyoruz.
-      - SIP_HOST=0.0.0.0
-      - SIP_PORT=${SIP_PORT}
-      - PUBLIC_IP=${PUBLIC_IP}
-      - USER_SERVICE_GRPC_URL=${USER_SERVICE_GRPC_URL}
-      - DIALPLAN_SERVICE_GRPC_URL=${DIALPLAN_SERVICE_GRPC_URL}
-      - MEDIA_SERVICE_GRPC_URL=${MEDIA_SERVICE_GRPC_URL}
-      - RABBITMQ_URL=${RABBITMQ_URL}    
+    # Bu satır, bu klasördeki .env dosyasını okuyarak
+    # tüm ortam değişkenlerini otomatik olarak yükler.
     env_file:
       - ./.env
-    ports:
-      - "${SIP_PORT:-5060}:${SIP_PORT:-5060}/udp"
+    # environment bloğunu kaldırıyoruz, çünkü env_file zaten bu işi yapıyor.
+    # Bu, "değişkenler neden iki yerde tanımlı?" karışıklığını giderir.
+    
+    # ports ve networks tanımları ana 'infrastructure' compose dosyasından gelmeli.
+    # Bu dosya sadece servisin nasıl 'build' edileceğini tanımlamalıdır.
+    # Ancak test için burada bırakabiliriz.
     networks:
       - sentiric-net
-    restart: always
 
 networks:
   sentiric-net:
-    name: ${NETWORK_NAME:-sentiric-net}
-    driver: bridge
+    # Bu ağın zaten 'infrastructure' tarafından oluşturulduğunu varsayıyoruz.
+    external: true

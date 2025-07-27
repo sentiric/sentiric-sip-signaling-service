@@ -19,6 +19,7 @@ tokio-util = "0.7"
 # YENİ EKLENEN KÜTÜPHANE:
 regex = "1"
 dotenv = "0.15" # .env dosyasını okumak için eklendi (opsiyonel ama faydalı)
+once_cell = "1.19" # <-- YENİ EKLENEN SATIR
 
 # tracing-subscriber satırını aşağıdaki ile değiştirin.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

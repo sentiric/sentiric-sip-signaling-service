@@ -5,13 +5,14 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::{sleep, Duration};
 use rand::Rng;
-use tracing::{info, error, debug, instrument};
-use tracing_subscriber::fmt::format::FmtSpan;
+use tracing::{info, error, debug, instrument, warn};
+use tracing_subscriber::EnvFilter;
 use tonic::transport::Channel;
 use lapin::{Connection, ConnectionProperties, options::*, types::FieldTable, BasicProperties, Channel as LapinChannel};
 use chrono::Utc;
 use serde_json::json;
 use regex::Regex;
+use once_cell::sync::Lazy;
 
 use sentiric_contracts::sentiric::{
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest},
@@ -19,6 +20,7 @@ use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, GetDialplanForUserRequest},
 };
 
+static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9]+)@").unwrap());
 const RABBITMQ_QUEUE_NAME: &str = "call.events";
 
 #[derive(Debug, Clone)]
@@ -33,6 +35,7 @@ struct AppConfig {
 
 impl AppConfig {
     fn load_from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        dotenv::dotenv().ok();
         let sip_host = env::var("SIP_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
         let sip_port_str = env::var("SIP_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
@@ -49,34 +52,51 @@ impl AppConfig {
     }
 }
 
+// DAYANIKLILIK FONKSİYONU: RabbitMQ'ya bağlanmak için tekrar deneme mantığı
+async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
+    let max_retries = 10;
+    for i in 0..max_retries {
+        match Connection::connect(url, ConnectionProperties::default()).await {
+            Ok(conn) => {
+                if let Ok(channel) = conn.create_channel().await {
+                    info!("RabbitMQ bağlantısı başarıyla kuruldu.");
+                    return Arc::new(channel);
+                }
+            }
+            Err(e) => {
+                warn!(attempt = i + 1, max_attempts = max_retries, error = %e, "RabbitMQ'ya bağlanılamadı. 5 saniye sonra tekrar denenecek...");
+                sleep(Duration::from_secs(5)).await;
+            }
+        }
+    }
+    // Tüm denemeler başarısız olursa, programın başlamasının bir anlamı kalmaz.
+    panic!("Maksimum deneme sayısına ulaşıldı, RabbitMQ'ya bağlanılamadı. Servis durduruluyor.");
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv::dotenv().ok();
-    
-    tracing_subscriber::fmt()
-        .json()
-        .with_file(true)
-        .with_line_number(true)
-        .with_target(true)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_span_events(FmtSpan::CLOSE) // instrument makrosu için span'in sonunda log bas
-        .init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
 
-    let config = Arc::new(AppConfig::load_from_env()?);
-    info!(config = ?config, "Konfigürasyon başarıyla yüklendi");
+    let config = match AppConfig::load_from_env() {
+        Ok(cfg) => Arc::new(cfg),
+        Err(e) => {
+            error!(error = %e, "Konfigürasyon yüklenemedi. .env veya ortam değişkenlerini kontrol edin.");
+            return Err(e);
+        }
+    };
+    info!("Konfigürasyon yüklendi.");
 
-    let rabbit_conn = Connection::connect(&config.rabbitmq_url, ConnectionProperties::default()).await?;
-    let rabbit_channel = Arc::new(rabbit_conn.create_channel().await?);
+    // Artık 'expect' yerine dayanıklı fonksiyonumuzu çağırıyoruz.
+    let rabbit_channel = connect_to_rabbitmq_with_retry(&config.rabbitmq_url).await;
     
-    rabbit_channel.confirm_select(ConfirmSelectOptions::default()).await?;
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
-    info!("RabbitMQ bağlantısı başarıyla kuruldu ve '{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
+    info!("'{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
 
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
-    info!(address = %config.sip_listen_addr, "SIP Sunucusu başlatıldı");
+    info!(address = %config.sip_listen_addr, "SIP Sunucusu başlatıldı. Çağrılar bekleniyor...");
     
     let mut buf = [0; 65535];
-
     loop {
         let (len, addr) = sock.recv_from(&mut buf).await?;
         let sock_clone = Arc::clone(&sock);
@@ -86,13 +106,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         
         tokio::spawn(async move {
             if let Err(e) = handle_sip_request(&request_bytes, sock_clone, addr, config_clone, rabbit_channel_clone).await {
-                error!(error = %e, "SIP isteği işlenirken hata oluştu");
+                error!(error = %e, remote_addr = %addr, "SIP isteği işlenirken akış tamamlanamadı.");
             }
         });
     }
 }
 
-#[instrument(skip_all, fields(remote_addr = %addr, call_id))]
+#[instrument(skip(request_bytes, sock, config, rabbit_channel), fields(remote_addr = %addr, call_id))]
 async fn handle_sip_request(
     request_bytes: &[u8],
     sock: Arc<UdpSocket>,
@@ -101,9 +121,8 @@ async fn handle_sip_request(
     rabbit_channel: Arc<LapinChannel>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let request_str = std::str::from_utf8(request_bytes)?;
-
     if !request_str.starts_with("INVITE") { return Ok(()); }
-
+    
     if let Some(mut headers) = parse_complex_headers(request_str) {
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         tracing::Span::current().record("call_id", &call_id.as_str());
@@ -111,7 +130,7 @@ async fn handle_sip_request(
 
         let from_uri = headers.get("From").cloned().unwrap_or_default();
         let to_uri = headers.get("To").cloned().unwrap_or_default();
-        let user_id_to_check = extract_user_from_uri(&from_uri).ok_or_else(|| "From header'ından kullanıcı ID'si ayııklanamadı.")?;
+        let user_id_to_check = extract_user_from_uri(&from_uri).ok_or("From header'ından kullanıcı ID'si ayııklanamadı.")?;
 
         sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
         
@@ -162,9 +181,11 @@ async fn handle_sip_request(
 }
 
 fn extract_user_from_uri(uri: &str) -> Option<String> {
-    let re = Regex::new(r"sip:\+?([0-9]+)@").unwrap();
-    re.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| user_part.as_str().to_string())
+    USER_EXTRACT_RE.captures(uri)
+        .and_then(|caps| caps.get(1))
+        .map(|user_part| user_part.as_str().to_string())
 }
+
 fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut headers = HashMap::new();
     let mut via_headers = Vec::new();

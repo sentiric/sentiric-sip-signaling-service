@@ -60,6 +60,8 @@ This service is not designed to run standalone. It is an integral part of the Se
 
 4.  **Run the platform:** The central Docker Compose file will automatically build and run this service.
     ```bash
+    docker network create sentiric-net
+
     # From the sentiric-infrastructure directory
     docker compose up --build -d
     ```
