@@ -190,7 +190,6 @@ async fn handle_bye(
     Ok(())
 }
 
-// DOSYA: sentiric-sip-signaling-service/src/main.rs (SADECE handle_invite fonksiyonunu değiştirin)
 
 async fn handle_invite(
     request_str: &str,
@@ -208,27 +207,31 @@ async fn handle_invite(
             return Ok(());
         }
         tracing::Span::current().record("call_id", &call_id.as_str());
-        
-        // --- KRİTİK DEĞİŞİKLİK: Yinelenen isteği en başta kontrol et ve hemen çık! ---
+
+        // --- YENİ EKLENEN KORUMA MEKANİZMASI ---
+        // Bu çağrı zaten aktif mi veya şu anda işleniyor mu diye kontrol et.
+        // Bu, SIP istemcilerinin timeout nedeniyle gönderdiği yinelenen INVITE'ları engeller.
         if active_calls.lock().await.contains_key(&call_id) || active_transactions.lock().await.contains(&call_id) {
              warn!(call_id = %call_id, "Yinelenen veya hala aktif olan bir çağrı için INVITE isteği alındı ve atlandı.");
-             // İstemciye meşgul olduğunu bildirebiliriz, bu timeout'u önleyebilir.
-             sock.send_to(create_response("486 Busy Here", &headers, None, &config).as_bytes(), addr).await?;
+             // İstemciye meşgul olduğunu bildirmek, gereksiz tekrarları önleyebilir.
+             // Bu isteğe bağlıdır ama iyi bir pratiktir.
+             let busy_response = create_response("486 Busy Here", &headers, None, &config);
+             sock.send_to(busy_response.as_bytes(), addr).await?;
              return Ok(());
         }
         
-        // --- Geliştirilmiş Transaction Yönetimi ---
-        // Bu noktadan sonra bu çağrıyı işlemeye başlıyoruz, hafızaya ekleyelim.
+        // Bu noktadan sonra bu çağrıyı işlemeye başlıyoruz, geçici olarak transaction listesine ekleyelim.
         active_transactions.lock().await.insert(call_id.clone());
         
         debug!("Yeni INVITE işleniyor...");
 
-        // Fonksiyon bittiğinde transaction'ı temizlemek için bir guard oluşturalım.
-        struct TransactionGuard {
+        // Fonksiyonun sonunda transaction'ı otomatik olarak temizlemek için bir "guard" kullanalım.
+        // Bu, hata olsa bile kaydın orada takılı kalmamasını sağlar.
+        struct TransactionGuard<'a> {
             call_id: String,
-            transactions: ActiveTransactions,
+            transactions: &'a ActiveTransactions,
         }
-        impl Drop for TransactionGuard {
+        impl<'a> Drop for TransactionGuard<'a> {
             fn drop(&mut self) {
                 let transactions = self.transactions.clone();
                 let call_id = self.call_id.clone();
@@ -240,9 +243,8 @@ async fn handle_invite(
         }
         let _guard = TransactionGuard {
             call_id: call_id.clone(),
-            transactions: active_transactions.clone(),
+            transactions: &active_transactions,
         };
-
 
         let from_uri = headers.get("From").cloned().unwrap_or_default();
         let to_uri = headers.get("To").cloned().unwrap_or_default();
@@ -283,13 +285,10 @@ async fn handle_invite(
         let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
         let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
         
-        // --- DEĞİŞİKLİK: Sadece 200 OK göndermeden hemen önce kalıcı listeye ekle ---
-        {
-            let mut calls_guard = active_calls.lock().await;
-            calls_guard.insert(call_id.clone(), server_rtp_port);
-            info!(call_id = %call_id, port = server_rtp_port, "Yeni aktif çağrı haritaya eklendi.");
-        }
-
+        // Çağrı başarıyla kurulmadan hemen önce kalıcı listeye ekle.
+        active_calls.lock().await.insert(call_id.clone(), server_rtp_port);
+        info!(call_id = %call_id, port = server_rtp_port, "Yeni aktif çağrı haritaya eklendi.");
+        
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!(port = server_rtp_port, "Arama başarıyla cevaplandı!");
         
@@ -313,8 +312,38 @@ async fn handle_invite(
     Ok(())
 }
 
+// DOSYA: sentiric-sip-signaling-service/src/main.rs (SADECE extract_user_from_uri fonksiyonunu güncelleyin)
+
 fn extract_user_from_uri(uri: &str) -> Option<String> {
-    USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| user_part.as_str().to_string())
+    USER_EXTRACT_RE.captures(uri)
+        .and_then(|caps| caps.get(1))
+        .map(|user_part| {
+            let original_num = user_part.as_str();
+            let mut num = original_num.to_string();
+
+            // Adım 1: Sadece rakamları bırak (opsiyonel ama güvenli)
+            num = num.chars().filter(|c| c.is_digit(10)).collect();
+
+            let normalized_num: String;
+
+            // Adım 2 & 3: Uzunluğa göre normalleştirme
+            if num.len() == 10 && !num.starts_with("90") {
+                // Örn: 5548777858 -> 905548777858
+                normalized_num = format!("90{}", num);
+            } else if num.len() == 11 && num.starts_with('0') {
+                // Örn: 05548777858 -> 905548777858
+                normalized_num = format!("90{}", &num[1..]);
+            } else {
+                // Zaten doğru formatta (90...) veya beklenmedik bir formatta ise dokunma
+                normalized_num = num;
+            }
+            
+            if original_num != normalized_num {
+                info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi.");
+            }
+
+            normalized_num
+        })
 }
 
 // DOSYA: sentiric-sip-signaling-service/src/main.rs (SADECE create_response fonksiyonunu güncelleyin)
