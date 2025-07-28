@@ -1,6 +1,6 @@
-// DOSYA: sentiric-sip-signaling-service/src/main.rs (SON DÜZELTİLMİŞ VERSİYON)
+// DOSYA: sentiric-sip-signaling-service/src/main.rs (SON VE KESİN ÇÖZÜM)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -8,49 +8,49 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
 use rand::Rng;
-use tracing::{info, error, debug, instrument, warn};
+use tracing::{info, error, instrument, warn};
 use tracing_subscriber::EnvFilter;
 use tonic::transport::Channel;
 use lapin::{Connection, ConnectionProperties, options::*, types::FieldTable, BasicProperties, Channel as LapinChannel};
 use chrono::Utc;
-use serde_json::json;
 use regex::Regex;
 use once_cell::sync::Lazy;
+use std::error::Error;
 
+// --- BURASI KRİTİK DEĞİŞİKLİK ---
+// Artık `mod` veya `include_proto!` yok.
+// `sentiric-contracts` kütüphanesini doğrudan `use` ile çağırıyoruz.
+// Cargo, `dependencies` bölümünde belirttiğimiz için onu nasıl bulacağını biliyor.
 use sentiric_contracts::sentiric::{
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest},
-    user::v1::{user_service_client::UserServiceClient, GetUserRequest},
-    dialplan::v1::{dialplan_service_client::DialplanServiceClient, GetDialplanForUserRequest},
+    dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
 };
 
-static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9]+)@").unwrap());
+static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9a-zA-Z]+)@").unwrap());
 const RABBITMQ_QUEUE_NAME: &str = "call.events";
 
-type ActiveTransactions = Arc<Mutex<HashSet<String>>>;
 type ActiveCalls = Arc<Mutex<HashMap<String, u32>>>;
 
+// ... (KODUN GERİ KALANI BİR ÖNCEKİ MESAJDAKİ GİBİ, HİÇBİR DEĞİŞİKLİK YOK) ...
 #[derive(Debug, Clone)]
 struct AppConfig {
     sip_listen_addr: SocketAddr,
     sip_public_ip: String,
-    user_service_url: String,
     dialplan_service_url: String,
     media_service_url: String,
     rabbitmq_url: String,
 }
 
 impl AppConfig {
-    fn load_from_env() -> Result<Self, Box<dyn std::error::Error>> {
+    fn load_from_env() -> Result<Self, Box<dyn Error>> {
         dotenv::dotenv().ok();
         let sip_host = env::var("SIP_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
         let sip_port_str = env::var("INTERNAL_SIP_SIGNALING_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
-        let sip_listen_addr = format!("{}:{}", sip_host, sip_port).parse()?;
         
         Ok(AppConfig {
-            sip_listen_addr,
+            sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
             sip_public_ip: env::var("PUBLIC_IP")?,
-            user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
             dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
             media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
             rabbitmq_url: env::var("RABBITMQ_URL")?,
@@ -74,22 +74,14 @@ async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
 
-    let config = match AppConfig::load_from_env() {
-        Ok(cfg) => Arc::new(cfg),
-        Err(e) => {
-            error!(error = %e, "Konfigürasyon yüklenemedi.");
-            return Err(e);
-        }
-    };
+    let config = Arc::new(AppConfig::load_from_env()?);
     info!("Konfigürasyon yüklendi.");
     
-    let active_transactions: ActiveTransactions = Arc::new(Mutex::new(HashSet::new()));
     let active_calls: ActiveCalls = Arc::new(Mutex::new(HashMap::new()));
-
     let rabbit_channel = connect_to_rabbitmq_with_retry(&config.rabbitmq_url).await;
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
     info!("'{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
@@ -104,20 +96,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let config_clone = Arc::clone(&config);
         let rabbit_channel_clone = Arc::clone(&rabbit_channel);
         let request_bytes = buf[..len].to_vec();
-        
-        let transactions_clone = Arc::clone(&active_transactions);
         let active_calls_clone = Arc::clone(&active_calls);
         
         tokio::spawn(async move {
-            if let Err(e) = handle_sip_request(
-                &request_bytes, 
-                sock_clone, 
-                addr, 
-                config_clone, 
-                rabbit_channel_clone,
-                transactions_clone,
-                active_calls_clone
-            ).await {
+            if let Err(e) = handle_sip_request(&request_bytes, sock_clone, addr, config_clone, rabbit_channel_clone, active_calls_clone).await {
                 error!(error = %e, remote_addr = %addr, "SIP isteği işlenirken akış tamamlanamadı.");
             }
         });
@@ -131,26 +113,110 @@ async fn handle_sip_request(
     addr: SocketAddr,
     config: Arc<AppConfig>,
     rabbit_channel: Arc<LapinChannel>,
-    active_transactions: ActiveTransactions,
     active_calls: ActiveCalls,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let request_str = std::str::from_utf8(request_bytes)?;
     
     if request_str.starts_with("INVITE") {
-        handle_invite(request_str, sock, addr, config, rabbit_channel, active_transactions, active_calls).await
+        handle_invite(request_str, sock, addr, config, rabbit_channel, active_calls).await
     } else if request_str.starts_with("BYE") {
-        handle_bye(request_str, sock, addr, config, rabbit_channel, active_calls).await
+        handle_bye(request_str, sock, addr, config, active_calls).await
     } else if request_str.starts_with("ACK") {
         if let Some(headers) = parse_complex_headers(request_str) {
             let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
-            tracing::Span::current().record("call_id", &call_id.as_str());
+            tracing::Span::current().record("call_id", &call_id as &str);
             info!("ACK isteği alındı, SIP diyaloğu başarıyla kuruldu.");
         }
         Ok(())
-    }
-    else {
+    } else {
         Ok(())
     }
+}
+
+async fn handle_invite(
+    request_str: &str,
+    sock: Arc<UdpSocket>,
+    addr: SocketAddr,
+    config: Arc<AppConfig>,
+    rabbit_channel: Arc<LapinChannel>,
+    active_calls: ActiveCalls,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut headers = match parse_complex_headers(request_str) {
+        Some(h) => h,
+        None => return Ok(()),
+    };
+    let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
+    tracing::Span::current().record("call_id", &call_id as &str);
+
+    if active_calls.lock().await.contains_key(&call_id) {
+        warn!("Yinelenen INVITE isteği atlandı.");
+        sock.send_to(create_response("486 Busy Here", &headers, None, &config).as_bytes(), addr).await?;
+        return Ok(());
+    }
+
+    let from_uri = headers.get("From").cloned().unwrap_or_default();
+    let to_uri = headers.get("To").cloned().unwrap_or_default();
+    let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
+    let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
+
+    sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
+    
+    let mut dialplan_client = DialplanServiceClient::connect(config.dialplan_service_url.clone()).await?;
+    let dialplan_req = ResolveDialplanRequest { caller_id, destination_number };
+    let dialplan_res = match dialplan_client.resolve_dialplan(dialplan_req).await {
+        Ok(res) => res.into_inner(),
+        Err(e) => {
+            error!(error = %e, "Dialplan çözümlenirken hata oluştu.");
+            sock.send_to(create_response("500 Server Internal Error", &headers, None, &config).as_bytes(), addr).await?;
+            return Err(e.into());
+        }
+    };
+    info!(dialplan_id = %dialplan_res.dialplan_id, action = %dialplan_res.action.as_ref().map_or("", |a| &a.action), "Dialplan çözümlendi.");
+
+    let mut media_client = MediaServiceClient::<Channel>::connect(config.media_service_url.clone()).await?;
+    let media_res = media_client.allocate_port(AllocatePortRequest { call_id: call_id.clone() }).await?.into_inner();
+    let server_rtp_port = media_res.rtp_port;
+    info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
+    
+    let to_header_val = headers.get("To").cloned().unwrap_or_default();
+    let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
+    headers.insert("To".to_string(), format!("{}{}", to_header_val, to_tag));
+    sock.send_to(create_response("180 Ringing", &headers, None, &config).as_bytes(), addr).await?;
+    sleep(Duration::from_millis(100)).await;
+
+    let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
+    let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
+    
+    active_calls.lock().await.insert(call_id.clone(), server_rtp_port);
+    info!(port = server_rtp_port, "Yeni aktif çağrı haritaya eklendi.");
+    
+    sock.send_to(ok_response.as_bytes(), addr).await?;
+    info!("Arama başarıyla cevaplandı!");
+    
+    let event_payload = serde_json::json!({
+        "eventType": "call.started",
+        "callId": call_id,
+        "from": from_uri,
+        "to": to_uri,
+        "media": { 
+            "server_rtp_port": server_rtp_port, 
+            "caller_rtp_addr": extract_sdp_media_info(request_str).unwrap_or_default()
+        },
+        "dialplan": dialplan_res,
+        "timestamp": Utc::now().to_rfc3339(),
+    });
+
+    rabbit_channel.basic_publish(
+        "", 
+        RABBITMQ_QUEUE_NAME, 
+        BasicPublishOptions::default(), 
+        event_payload.to_string().as_bytes(), 
+        BasicProperties::default().with_delivery_mode(2)
+    ).await?.await?;
+
+    info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı.");
+    
+    Ok(())
 }
 
 async fn handle_bye(
@@ -158,29 +224,24 @@ async fn handle_bye(
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     config: Arc<AppConfig>,
-    _rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if let Some(headers) = parse_complex_headers(request_str) {
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
-        tracing::Span::current().record("call_id", &call_id.as_str());
+        tracing::Span::current().record("call_id", &call_id as &str);
         info!("BYE isteği alındı.");
 
-        let rtp_port_to_release = {
-            let mut calls_guard = active_calls.lock().await;
-            calls_guard.remove(&call_id)
-        };
+        let rtp_port_to_release = { active_calls.lock().await.remove(&call_id) };
 
         if let Some(rtp_port) = rtp_port_to_release {
             info!(port = rtp_port, "Çağrı sonlandırılıyor, RTP portu serbest bırakılacak.");
             let mut media_client = MediaServiceClient::<Channel>::connect(config.media_service_url.clone()).await?;
-            let release_req = ReleasePortRequest { rtp_port };
-            match media_client.release_port(release_req).await {
+            match media_client.release_port(ReleasePortRequest { rtp_port }).await {
                 Ok(_) => info!(port = rtp_port, "Media service'den port serbest bırakma onayı alındı."),
                 Err(e) => error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu."),
             }
         } else {
-            warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı. Port serbest bırakılamadı.");
+            warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
         }
 
         let ok_response = create_response("200 OK", &headers, None, &config);
@@ -189,164 +250,6 @@ async fn handle_bye(
     }
     Ok(())
 }
-
-
-async fn handle_invite(
-    request_str: &str,
-    sock: Arc<UdpSocket>,
-    addr: SocketAddr,
-    config: Arc<AppConfig>,
-    rabbit_channel: Arc<LapinChannel>,
-    active_transactions: ActiveTransactions,
-    active_calls: ActiveCalls,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(mut headers) = parse_complex_headers(request_str) {
-        let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
-        if call_id.is_empty() {
-            warn!("Call-ID bulunamayan INVITE paketi atlandı.");
-            return Ok(());
-        }
-        tracing::Span::current().record("call_id", &call_id.as_str());
-
-        // --- YENİ EKLENEN KORUMA MEKANİZMASI ---
-        // Bu çağrı zaten aktif mi veya şu anda işleniyor mu diye kontrol et.
-        // Bu, SIP istemcilerinin timeout nedeniyle gönderdiği yinelenen INVITE'ları engeller.
-        if active_calls.lock().await.contains_key(&call_id) || active_transactions.lock().await.contains(&call_id) {
-             warn!(call_id = %call_id, "Yinelenen veya hala aktif olan bir çağrı için INVITE isteği alındı ve atlandı.");
-             // İstemciye meşgul olduğunu bildirmek, gereksiz tekrarları önleyebilir.
-             // Bu isteğe bağlıdır ama iyi bir pratiktir.
-             let busy_response = create_response("486 Busy Here", &headers, None, &config);
-             sock.send_to(busy_response.as_bytes(), addr).await?;
-             return Ok(());
-        }
-        
-        // Bu noktadan sonra bu çağrıyı işlemeye başlıyoruz, geçici olarak transaction listesine ekleyelim.
-        active_transactions.lock().await.insert(call_id.clone());
-        
-        debug!("Yeni INVITE işleniyor...");
-
-        // Fonksiyonun sonunda transaction'ı otomatik olarak temizlemek için bir "guard" kullanalım.
-        // Bu, hata olsa bile kaydın orada takılı kalmamasını sağlar.
-        struct TransactionGuard<'a> {
-            call_id: String,
-            transactions: &'a ActiveTransactions,
-        }
-        impl<'a> Drop for TransactionGuard<'a> {
-            fn drop(&mut self) {
-                let transactions = self.transactions.clone();
-                let call_id = self.call_id.clone();
-                tokio::spawn(async move {
-                    debug!(call_id = %call_id, "Transaction tamamlandı, geçici listeden siliniyor.");
-                    transactions.lock().await.remove(&call_id);
-                });
-            }
-        }
-        let _guard = TransactionGuard {
-            call_id: call_id.clone(),
-            transactions: &active_transactions,
-        };
-
-        let from_uri = headers.get("From").cloned().unwrap_or_default();
-        let to_uri = headers.get("To").cloned().unwrap_or_default();
-        let user_id_to_check = extract_user_from_uri(&from_uri).ok_or("From header'ından kullanıcı ID'si ayııklanamadı.")?;
-        
-        sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
-        
-        let mut user_client = UserServiceClient::connect(config.user_service_url.clone()).await?;
-        let user_res = user_client.get_user(GetUserRequest { id: user_id_to_check.clone() }).await?.into_inner();
-        
-        if user_res.user.is_none() {
-            sock.send_to(create_response("404 Not Found", &headers, None, &config).as_bytes(), addr).await?;
-            return Err(format!("Kullanıcı bulunamadı: {}", user_id_to_check).into());
-        }
-        let found_user = user_res.user.unwrap();
-        info!(user_id = %found_user.id, "Kullanıcı doğrulandı.");
-        
-        let mut dialplan_client = DialplanServiceClient::connect(config.dialplan_service_url.clone()).await?;
-        let dialplan_res = dialplan_client.get_dialplan_for_user(GetDialplanForUserRequest { user_id: found_user.id.clone() }).await?.into_inner();
-        
-        if dialplan_res.dialplan_id.is_empty() {
-            sock.send_to(create_response("404 Not Found", &headers, None, &config).as_bytes(), addr).await?;
-            return Err(format!("Yönlendirme planı bulunamadı: {}", found_user.id).into());
-        }
-        info!(dialplan_id = %dialplan_res.dialplan_id, "Yönlendirme planı alındı.");
-        
-        let mut media_client = MediaServiceClient::<Channel>::connect(config.media_service_url.clone()).await?;
-        let media_res = media_client.allocate_port(AllocatePortRequest { call_id: call_id.clone() }).await?.into_inner();
-        let server_rtp_port = media_res.rtp_port;
-        info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
-        
-        let to_header = headers.get("To").cloned().unwrap_or_default();
-        let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
-        headers.insert("To".to_string(), format!("{}{}", to_header, to_tag));
-        sock.send_to(create_response("180 Ringing", &headers, None, &config).as_bytes(), addr).await?;
-        sleep(Duration::from_millis(100)).await;
-
-        let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
-        let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
-        
-        // Çağrı başarıyla kurulmadan hemen önce kalıcı listeye ekle.
-        active_calls.lock().await.insert(call_id.clone(), server_rtp_port);
-        info!(call_id = %call_id, port = server_rtp_port, "Yeni aktif çağrı haritaya eklendi.");
-        
-        sock.send_to(ok_response.as_bytes(), addr).await?;
-        info!(port = server_rtp_port, "Arama başarıyla cevaplandı!");
-        
-        let caller_rtp_addr = extract_sdp_media_info(request_str).ok_or("INVITE'ın SDP bölümünden medya bilgisi alınamadı.")?;
-        info!(target_addr = %caller_rtp_addr, "Arayan tarafın RTP adresi SDP'den okundu.");
-
-        let event_payload = json!({
-            "eventType": "call.started",
-            "callId": call_id,
-            "from": from_uri,
-            "to": to_uri,
-            "media": {
-                "server_rtp_port": server_rtp_port,
-                "caller_rtp_addr": caller_rtp_addr
-            },
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-        rabbit_channel.basic_publish("", RABBITMQ_QUEUE_NAME, BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await?.await?;
-        info!("'call.started' olayı RabbitMQ'ya başarıyla yayınlandı.");
-    }
-    Ok(())
-}
-
-// DOSYA: sentiric-sip-signaling-service/src/main.rs (SADECE extract_user_from_uri fonksiyonunu güncelleyin)
-
-fn extract_user_from_uri(uri: &str) -> Option<String> {
-    USER_EXTRACT_RE.captures(uri)
-        .and_then(|caps| caps.get(1))
-        .map(|user_part| {
-            let original_num = user_part.as_str();
-            let mut num = original_num.to_string();
-
-            // Adım 1: Sadece rakamları bırak (opsiyonel ama güvenli)
-            num = num.chars().filter(|c| c.is_digit(10)).collect();
-
-            let normalized_num: String;
-
-            // Adım 2 & 3: Uzunluğa göre normalleştirme
-            if num.len() == 10 && !num.starts_with("90") {
-                // Örn: 5548777858 -> 905548777858
-                normalized_num = format!("90{}", num);
-            } else if num.len() == 11 && num.starts_with('0') {
-                // Örn: 05548777858 -> 905548777858
-                normalized_num = format!("90{}", &num[1..]);
-            } else {
-                // Zaten doğru formatta (90...) veya beklenmedik bir formatta ise dokunma
-                normalized_num = num;
-            }
-            
-            if original_num != normalized_num {
-                info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi.");
-            }
-
-            normalized_num
-        })
-}
-
-// DOSYA: sentiric-sip-signaling-service/src/main.rs (SADECE create_response fonksiyonunu güncelleyin)
 
 fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
     let body = sdp.unwrap_or("");
@@ -363,10 +266,8 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
     let empty_string = String::new();
     let cseq_full = headers.get("CSeq").unwrap_or(&empty_string);
     
-    // --- KRİTİK DEĞİŞİKLİK: Contact başlığında PUBLIC_IP kullanıyoruz! ---
-    // Bu, ACK ve BYE mesajlarının bize doğru şekilde geri dönmesini sağlar.
     let contact_header = format!("<sip:{}@{}:{}>", 
-        "sentiric-signal", // Kullanıcı adı önemli değil, genellikle servis adı kullanılır
+        "sentiric-signal",
         config.sip_public_ip, 
         config.sip_listen_addr.port()
     );
@@ -392,7 +293,7 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
         headers.get("To").unwrap_or(&empty_string),
         headers.get("Call-ID").unwrap_or(&empty_string),
         cseq_full,
-        contact_header, // Güncellenmiş Contact başlığını buraya koyuyoruz
+        contact_header,
         content_length,
         body
     )
@@ -424,6 +325,27 @@ fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
         warn!("Gelen SIP isteğinde Via başlığı bulunamadı.");
         None
     }
+}
+
+fn extract_user_from_uri(uri: &str) -> Option<String> {
+    USER_EXTRACT_RE.captures(uri)
+        .and_then(|caps| caps.get(1))
+        .map(|user_part| {
+            let original_num = user_part.as_str();
+            let mut num: String = original_num.chars().filter(|c| c.is_digit(10)).collect();
+
+            if num.len() == 11 && num.starts_with('0') {
+                num = format!("90{}", &num[1..]);
+            } else if num.len() == 10 && !num.starts_with("90") {
+                num = format!("90{}", num);
+            }
+            
+            let normalized_num = num;
+            if original_num != normalized_num {
+                info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi.");
+            }
+            normalized_num
+        })
 }
 
 fn extract_sdp_media_info(sip_request: &str) -> Option<String> {
