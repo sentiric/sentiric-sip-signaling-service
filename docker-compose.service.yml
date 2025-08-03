@@ -1,24 +1,132 @@
-services:
-  sip-signaling:
-    image: ${DOCKER_REGISTRY:-ghcr.io/sentiric}/sentiric-sip-signaling-service:${TAG:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: sentiric_sip_signaling
-    # Bu satır, bu klasördeki .env dosyasını okuyarak
-    # tüm ortam değişkenlerini otomatik olarak yükler.
-    env_file:
-      - ./.env
-    # environment bloğunu kaldırıyoruz, çünkü env_file zaten bu işi yapıyor.
-    # Bu, "değişkenler neden iki yerde tanımlı?" karışıklığını giderir.
-    
-    # ports ve networks tanımları ana 'infrastructure' compose dosyasından gelmeli.
-    # Bu dosya sadece servisin nasıl 'build' edileceğini tanımlamalıdır.
-    # Ancak test için burada bırakabiliriz.
-    networks:
-      - sentiric-net
-
 networks:
   sentiric-net:
-    # Bu ağın zaten 'infrastructure' tarafından oluşturulduğunu varsayıyoruz.
-    external: true
+    name: ${NETWORK_NAME:-sentiric-net}
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
+  postgres_data:
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - ./.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../sentiric-infrastructure/postgres-init:/docker-entrypoint-initdb.d
+    # ports:
+    #   - "${POSTGRES_DB_PORT}:${POSTGRES_DB_PORT}"
+    networks:
+      - sentiric-net
+    profiles:
+      - default
+      - data
+    restart: always
+
+  rabbitmq:
+    image: rabbitmq:4.1.0-management-alpine
+    env_file:
+      - ./.env
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq/
+    # ports:
+    #   - "${RABBITMQ_PORT}:${RABBITMQ_PORT}"
+    #   - "15672:15672"
+    networks:
+      - sentiric-net
+    profiles:
+      - default
+      - data
+    restart: always
+
+  media-service:
+    build:
+      context: ../sentiric-media-service
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: sentiric-media-service
+    env_file:
+      - ./.env
+    volumes:
+      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+    ports:
+      - "${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}:${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}/udp"
+      # - "${MEDIA_SERVICE_GRPC_PORT}:${MEDIA_SERVICE_GRPC_PORT}"
+    networks:
+      - sentiric-net
+    profiles:
+      - default
+      - telekom
+
+  user-service:
+    build:
+      context: ../sentiric-user-service
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: sentiric-user-service
+    env_file:
+      - ./.env
+    volumes:
+      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+    # ports:
+    #   - "${USER_SERVICE_GRPC_PORT}:${USER_SERVICE_GRPC_PORT}"
+    networks:
+      - sentiric-net
+    profiles:
+      - default
+      - app
+    restart: always 
+
+  dialplan-service: 
+
+    build:
+      context: ../sentiric-dialplan-service
+      dockerfile: Dockerfile         
+      args:
+        SERVICE_NAME: sentiric-dialplan-service
+
+    env_file: 
+      - ./.env
+
+    volumes:
+      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+
+    # ports:
+    #   - "${DIALPLAN_SERVICE_PORT}:${DIALPLAN_SERVICE_PORT}"
+
+    networks:
+      - sentiric-net
+    
+    profiles:
+      - default
+      - app
+
+    restart: always      
+
+  sip-signaling:  
+
+    build:
+      context: .
+      dockerfile: Dockerfile      
+      args:
+        SERVICE_NAME: sentiric-sip-signaling
+
+    env_file: 
+      - ./.env 
+
+    volumes:
+      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+
+    # ports:
+    #   - "${SIP_SIGNALING_SERVICE_PORT}:${SIP_SIGNALING_SERVICE_PORT}"
+
+    networks:
+      - sentiric-net
+    
+    profiles:
+      - default
+      - telekom
+
+    restart: always  

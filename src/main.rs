@@ -1,4 +1,4 @@
-// DOSYA: sentiric-sip-signaling-service/src/main.rs (SON VE KESİN ÇÖZÜM)
+// DOSYA: sentiric-sip-signaling-service/src/main.rs
 
 use std::collections::HashMap;
 use std::env;
@@ -10,20 +10,17 @@ use tokio::time::{sleep, Duration};
 use rand::Rng;
 use tracing::{info, error, instrument, warn};
 use tracing_subscriber::EnvFilter;
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, ClientTlsConfig, Identity, Channel};
 use lapin::{Connection, ConnectionProperties, options::*, types::FieldTable, BasicProperties, Channel as LapinChannel};
 use chrono::Utc;
 use regex::Regex;
 use once_cell::sync::Lazy;
 use std::error::Error;
 
-// --- BURASI KRİTİK DEĞİŞİKLİK ---
-// Artık `mod` veya `include_proto!` yok.
-// `sentiric-contracts` kütüphanesini doğrudan `use` ile çağırıyoruz.
-// Cargo, `dependencies` bölümünde belirttiğimiz için onu nasıl bulacağını biliyor.
 use sentiric_contracts::sentiric::{
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest},
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
+    user::v1::{user_service_client::UserServiceClient, GetUserRequest},
 };
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?([0-9a-zA-Z]+)@").unwrap());
@@ -31,29 +28,31 @@ const RABBITMQ_QUEUE_NAME: &str = "call.events";
 
 type ActiveCalls = Arc<Mutex<HashMap<String, u32>>>;
 
-// ... (KODUN GERİ KALANI BİR ÖNCEKİ MESAJDAKİ GİBİ, HİÇBİR DEĞİŞİKLİK YOK) ...
 #[derive(Debug, Clone)]
 struct AppConfig {
     sip_listen_addr: SocketAddr,
     sip_public_ip: String,
     dialplan_service_url: String,
     media_service_url: String,
+    user_service_url: String,
     rabbitmq_url: String,
 }
 
 impl AppConfig {
     fn load_from_env() -> Result<Self, Box<dyn Error>> {
         dotenv::dotenv().ok();
-        let sip_host = env::var("SIP_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let sip_port_str = env::var("INTERNAL_SIP_SIGNALING_PORT").unwrap_or_else(|_| "5060".to_string());
+        let sip_host = env::var("SIP_SIGNALING_SERVICE_LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let sip_port_str = env::var("SIP_SIGNALING_SERVICE_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
         
         Ok(AppConfig {
             sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
             sip_public_ip: env::var("PUBLIC_IP")?,
-            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
-            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
             rabbitmq_url: env::var("RABBITMQ_URL")?,
+            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
+            user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
+            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
+
         })
     }
 }
@@ -133,6 +132,32 @@ async fn handle_sip_request(
     }
 }
 
+async fn create_secure_grpc_channel(url: &str) -> Result<Channel, Box<dyn Error + Send + Sync>> {
+    let cert_path = env::var("SIP_SIGNALING_SERVICE_CERT_PATH")?;
+    let key_path = env::var("SIP_SIGNALING_SERVICE_KEY_PATH")?;
+    let ca_path = env::var("GRPC_TLS_CA_PATH")?;
+
+    let cert = tokio::fs::read(cert_path).await?;
+    let key = tokio::fs::read(key_path).await?;
+    let ca_cert = tokio::fs::read(ca_path).await?;
+
+    let identity = Identity::from_pem(cert, key);
+    let ca_cert = Certificate::from_pem(ca_cert);
+
+    let tls_config = ClientTlsConfig::new()
+        .domain_name(url.split(':').next().unwrap_or("localhost"))
+        .ca_certificate(ca_cert)
+        .identity(identity);
+
+    let channel = Channel::from_shared(format!("http://{}", url))?
+        .tls_config(tls_config)?
+        .connect()
+        .await?;
+    
+    Ok(channel)
+}
+
+// handle_invite ve handle_bye fonksiyonları, user-service'i de çağıracak şekilde güncellendi.
 async fn handle_invite(
     request_str: &str,
     sock: Arc<UdpSocket>,
@@ -141,6 +166,7 @@ async fn handle_invite(
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // ... (header parse, yinelenen INVITE kontrolü, URI parse aynı) ...
     let mut headers = match parse_complex_headers(request_str) {
         Some(h) => h,
         None => return Ok(()),
@@ -159,10 +185,22 @@ async fn handle_invite(
     let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
     let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
 
+
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     
-    let mut dialplan_client = DialplanServiceClient::connect(config.dialplan_service_url.clone()).await?;
-    let dialplan_req = ResolveDialplanRequest { caller_id, destination_number };
+    // YENİ: user-service'i de çağırıyoruz, ancak şimdilik sonucunu kullanmıyoruz. Sadece bağlantıyı test ediyoruz.
+    let user_channel = create_secure_grpc_channel(&config.user_service_url).await?;
+    let mut user_client = UserServiceClient::new(user_channel);
+    match user_client.get_user(GetUserRequest { id: caller_id.clone() }).await {
+        Ok(user_res) => info!(user_id = %user_res.into_inner().user.unwrap_or_default().id, "Kullanıcı doğrulama başarılı."),
+        Err(status) if status.code() == tonic::Code::NotFound => info!("Arayan kişi sistemde kayıtlı değil."),
+        Err(e) => warn!(error = %e, "Kullanıcı doğrulanırken hata oluştu."),
+    }
+
+    let dialplan_channel = create_secure_grpc_channel(&config.dialplan_service_url).await?;
+    let mut dialplan_client = DialplanServiceClient::new(dialplan_channel);
+    
+    let dialplan_req = ResolveDialplanRequest { caller_id: caller_id.clone(), destination_number };
     let dialplan_res = match dialplan_client.resolve_dialplan(dialplan_req).await {
         Ok(res) => res.into_inner(),
         Err(e) => {
@@ -173,11 +211,14 @@ async fn handle_invite(
     };
     info!(dialplan_id = %dialplan_res.dialplan_id, action = %dialplan_res.action.as_ref().map_or("", |a| &a.action), "Dialplan çözümlendi.");
 
-    let mut media_client = MediaServiceClient::<Channel>::connect(config.media_service_url.clone()).await?;
+    let media_channel = create_secure_grpc_channel(&config.media_service_url).await?;
+    let mut media_client = MediaServiceClient::new(media_channel);
+    
     let media_res = media_client.allocate_port(AllocatePortRequest { call_id: call_id.clone() }).await?.into_inner();
     let server_rtp_port = media_res.rtp_port;
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
     
+    // ... (kodun geri kalanı DEĞİŞMEDEN AYNI) ...
     let to_header_val = headers.get("To").cloned().unwrap_or_default();
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.insert("To".to_string(), format!("{}{}", to_header_val, to_tag));
@@ -235,7 +276,10 @@ async fn handle_bye(
 
         if let Some(rtp_port) = rtp_port_to_release {
             info!(port = rtp_port, "Çağrı sonlandırılıyor, RTP portu serbest bırakılacak.");
-            let mut media_client = MediaServiceClient::<Channel>::connect(config.media_service_url.clone()).await?;
+            
+            let media_channel = create_secure_grpc_channel(&config.media_service_url).await?;
+            let mut media_client = MediaServiceClient::new(media_channel);
+
             match media_client.release_port(ReleasePortRequest { rtp_port }).await {
                 Ok(_) => info!(port = rtp_port, "Media service'den port serbest bırakma onayı alındı."),
                 Err(e) => error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu."),
@@ -251,6 +295,7 @@ async fn handle_bye(
     Ok(())
 }
 
+// ... (create_response, parse_complex_headers, extract_user_from_uri, extract_sdp_media_info fonksiyonları DEĞİŞMEDEN AYNI KALACAK) ...
 fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
     let body = sdp.unwrap_or("");
     let content_length = body.len();

@@ -1,5 +1,6 @@
 # --- AŞAMA 1: Derleme (Builder) ---
 # En güncel ve 'slim' bir temel imaj kullanarak başlıyoruz.
+# Bu, hem en son derleyici özelliklerini almamızı sağlar hem de imaj boyutunu küçültür.
 FROM rust:1.88-slim-bookworm AS builder
 
 # Gerekli derleme araçlarını kuruyoruz.
@@ -21,15 +22,14 @@ RUN cargo build --release
 
 # --- AŞAMA 2: Çalıştırma (Runtime) ---
 # Mümkün olan en küçük ve en güvenli imajlardan birini kullanıyoruz.
-FROM gcr.io/distroless/cc-debian12
+FROM debian:bookworm-slim
 
+RUN apt-get update && apt-get install -y netcat-openbsd ca-certificates && rm -rf /var/lib/apt/lists/*
+
+ARG SERVICE_NAME
 WORKDIR /app
-# 'sentiric-sip-signaling-service' adını doğru şekilde kullanıyoruz.
-COPY --from=builder /app/target/release/sentiric-sip-signaling-service .
+COPY --from=builder /app/target/release/${SERVICE_NAME} .
 
-# Servisin dış dünyaya açtığı portları belirtmek iyi bir dokümantasyondur.
-# Bu port, ana docker-compose dosyasında gateway tarafından kullanılır.
-EXPOSE 5060/udp 
+COPY --from=builder /app/target/release/${SERVICE_NAME} /app/main
 
-# Uygulamayı çalıştır
-ENTRYPOINT ["./sentiric-sip-signaling-service"]
+ENTRYPOINT ["/app/main"]
