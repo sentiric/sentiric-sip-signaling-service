@@ -1,4 +1,4 @@
-// DOSYA: sentiric-sip-signaling-service/src/main.rs
+// DOSYA: sentiric-sip-signaling-service/src/main.rs (GÜNCELLENMİŞ VE DÜZELTİLMİŞ)
 
 use std::collections::HashMap;
 use std::env;
@@ -52,7 +52,6 @@ impl AppConfig {
             media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
             user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
             dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
-
         })
     }
 }
@@ -132,7 +131,10 @@ async fn handle_sip_request(
     }
 }
 
-async fn create_secure_grpc_channel(url: &str) -> Result<Channel, Box<dyn Error + Send + Sync>> {
+// DOSYA: sentiric-sip-signaling-service/src/main.rs
+// create_secure_grpc_channel FONKSİYONUNUN DÜZELTİLMİŞ HALİ
+
+async fn create_secure_grpc_channel(url: &str, server_name: &str) -> Result<Channel, Box<dyn Error + Send + Sync>> {
     let cert_path = env::var("SIP_SIGNALING_SERVICE_CERT_PATH")?;
     let key_path = env::var("SIP_SIGNALING_SERVICE_KEY_PATH")?;
     let ca_path = env::var("GRPC_TLS_CA_PATH")?;
@@ -145,19 +147,24 @@ async fn create_secure_grpc_channel(url: &str) -> Result<Channel, Box<dyn Error 
     let ca_cert = Certificate::from_pem(ca_cert);
 
     let tls_config = ClientTlsConfig::new()
-        .domain_name(url.split(':').next().unwrap_or("localhost"))
+        .domain_name(server_name)
         .ca_certificate(ca_cert)
         .identity(identity);
 
-    let channel = Channel::from_shared(format!("http://{}", url))?
+    // DÜZELTME BURADA:
+    // 1. Endpoint'i HTTPS şeması ve TLS yapılandırması ile oluştur.
+    // 2. Timeout ayarını yap.
+    // 3. connect() metodunu çağır ve SONUCUNU bekle (.await).
+    let channel = Channel::from_shared(format!("https://{}", url))?
         .tls_config(tls_config)?
+        .connect_timeout(Duration::from_secs(5))
         .connect()
         .await?;
     
     Ok(channel)
 }
 
-// handle_invite ve handle_bye fonksiyonları, user-service'i de çağıracak şekilde güncellendi.
+#[instrument(skip_all, fields(remote_addr = %addr))]
 async fn handle_invite(
     request_str: &str,
     sock: Arc<UdpSocket>,
@@ -166,7 +173,6 @@ async fn handle_invite(
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    // ... (header parse, yinelenen INVITE kontrolü, URI parse aynı) ...
     let mut headers = match parse_complex_headers(request_str) {
         Some(h) => h,
         None => return Ok(()),
@@ -185,11 +191,10 @@ async fn handle_invite(
     let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
     let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
 
-
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     
-    // YENİ: user-service'i de çağırıyoruz, ancak şimdilik sonucunu kullanmıyoruz. Sadece bağlantıyı test ediyoruz.
-    let user_channel = create_secure_grpc_channel(&config.user_service_url).await?;
+    // YENİ: user-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
+    let user_channel = create_secure_grpc_channel(&config.user_service_url, "user-service").await?;
     let mut user_client = UserServiceClient::new(user_channel);
     match user_client.get_user(GetUserRequest { id: caller_id.clone() }).await {
         Ok(user_res) => info!(user_id = %user_res.into_inner().user.unwrap_or_default().id, "Kullanıcı doğrulama başarılı."),
@@ -197,7 +202,8 @@ async fn handle_invite(
         Err(e) => warn!(error = %e, "Kullanıcı doğrulanırken hata oluştu."),
     }
 
-    let dialplan_channel = create_secure_grpc_channel(&config.dialplan_service_url).await?;
+    // YENİ: dialplan-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
+    let dialplan_channel = create_secure_grpc_channel(&config.dialplan_service_url, "dialplan-service").await?;
     let mut dialplan_client = DialplanServiceClient::new(dialplan_channel);
     
     let dialplan_req = ResolveDialplanRequest { caller_id: caller_id.clone(), destination_number };
@@ -211,14 +217,14 @@ async fn handle_invite(
     };
     info!(dialplan_id = %dialplan_res.dialplan_id, action = %dialplan_res.action.as_ref().map_or("", |a| &a.action), "Dialplan çözümlendi.");
 
-    let media_channel = create_secure_grpc_channel(&config.media_service_url).await?;
+    // YENİ: media-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
+    let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
     let mut media_client = MediaServiceClient::new(media_channel);
     
     let media_res = media_client.allocate_port(AllocatePortRequest { call_id: call_id.clone() }).await?.into_inner();
     let server_rtp_port = media_res.rtp_port;
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
     
-    // ... (kodun geri kalanı DEĞİŞMEDEN AYNI) ...
     let to_header_val = headers.get("To").cloned().unwrap_or_default();
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.insert("To".to_string(), format!("{}{}", to_header_val, to_tag));
@@ -260,6 +266,7 @@ async fn handle_invite(
     Ok(())
 }
 
+#[instrument(skip_all, fields(remote_addr = %addr))]
 async fn handle_bye(
     request_str: &str,
     sock: Arc<UdpSocket>,
@@ -277,7 +284,8 @@ async fn handle_bye(
         if let Some(rtp_port) = rtp_port_to_release {
             info!(port = rtp_port, "Çağrı sonlandırılıyor, RTP portu serbest bırakılacak.");
             
-            let media_channel = create_secure_grpc_channel(&config.media_service_url).await?;
+            // YENİ: media-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
+            let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
             let mut media_client = MediaServiceClient::new(media_channel);
 
             match media_client.release_port(ReleasePortRequest { rtp_port }).await {
@@ -295,7 +303,6 @@ async fn handle_bye(
     Ok(())
 }
 
-// ... (create_response, parse_complex_headers, extract_user_from_uri, extract_sdp_media_info fonksiyonları DEĞİŞMEDEN AYNI KALACAK) ...
 fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
     let body = sdp.unwrap_or("");
     let content_length = body.len();
