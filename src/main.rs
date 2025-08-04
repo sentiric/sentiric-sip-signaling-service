@@ -1,25 +1,29 @@
-// DOSYA: sentiric-sip-signaling-service/src/main.rs (GÜNCELLENMİŞ VE DÜZELTİLMİŞ)
+// DOSYA: sentiric-sip-signaling-service/src/main.rs (GÖZLEMLENEBİLİRLİK GÜNCELLENDİ)
 
 use std::collections::HashMap;
 use std::env;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
-use rand::Rng;
-use tracing::{info, error, instrument, warn};
-use tracing_subscriber::EnvFilter;
-use tonic::transport::{Certificate, ClientTlsConfig, Identity, Channel};
-use lapin::{Connection, ConnectionProperties, options::*, types::FieldTable, BasicProperties, Channel as LapinChannel};
-use chrono::Utc;
-use regex::Regex;
-use once_cell::sync::Lazy;
-use std::error::Error;
 
+use chrono::Utc;
+use once_cell::sync::Lazy;
+use regex::Regex;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
+use tracing::{error, info, instrument, warn, Level}; // Level eklendi
+use tracing_subscriber::EnvFilter;
+
+use lapin::{
+    options::*, types::FieldTable, BasicProperties, Channel as LapinChannel, Connection,
+    ConnectionProperties,
+};
+use rand::Rng;
 use sentiric_contracts::sentiric::{
-    media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest},
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
+    media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest},
     user::v1::{user_service_client::UserServiceClient, GetUserRequest},
 };
 
@@ -36,15 +40,18 @@ struct AppConfig {
     media_service_url: String,
     user_service_url: String,
     rabbitmq_url: String,
+    env: String, // Ortamı belirlemek için yeni alan
 }
 
 impl AppConfig {
     fn load_from_env() -> Result<Self, Box<dyn Error>> {
         dotenv::dotenv().ok();
-        let sip_host = env::var("SIP_SIGNALING_SERVICE_LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let sip_port_str = env::var("SIP_SIGNALING_SERVICE_PORT").unwrap_or_else(|_| "5060".to_string());
+        let sip_host =
+            env::var("SIP_SIGNALING_SERVICE_LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let sip_port_str =
+            env::var("SIP_SIGNALING_SERVICE_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
-        
+
         Ok(AppConfig {
             sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
             sip_public_ip: env::var("PUBLIC_IP")?,
@@ -52,11 +59,13 @@ impl AppConfig {
             media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
             user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
             dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
+            env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
         })
     }
 }
 
 async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
+    // ... (içerik aynı, değişiklik yok) ...
     let max_retries = 10;
     for i in 0..max_retries {
         if let Ok(conn) = Connection::connect(url, ConnectionProperties::default()).await {
@@ -73,22 +82,36 @@ async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().json().with_env_filter(env_filter).init();
-
     let config = Arc::new(AppConfig::load_from_env()?);
-    info!("Konfigürasyon yüklendi.");
+
+    // --- YENİ LOGLAMA KURULUMU ---
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    
+    let subscriber_builder = tracing_subscriber::fmt().with_env_filter(env_filter);
+
+    if config.env == "development" {
+        // Geliştirme: Renkli, okunabilir loglar
+        subscriber_builder.with_target(true).with_line_number(true).init();
+    } else {
+        // Üretim: Yapılandırılmış JSON logları
+        subscriber_builder.json().with_current_span(true).with_span_list(true).init();
+    }
+    // --- BİTTİ ---
+
+    info!(config = ?config, "Konfigürasyon yüklendi.");
     
     let active_calls: ActiveCalls = Arc::new(Mutex::new(HashMap::new()));
     let rabbit_channel = connect_to_rabbitmq_with_retry(&config.rabbitmq_url).await;
     rabbit_channel.queue_declare(RABBITMQ_QUEUE_NAME, QueueDeclareOptions { durable: true, ..Default::default() }, FieldTable::default()).await?;
-    info!("'{}' kuyruğu deklare edildi.", RABBITMQ_QUEUE_NAME);
+    info!(queue_name = RABBITMQ_QUEUE_NAME, "RabbitMQ kuyruğu deklare edildi.");
 
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
     info!(address = %config.sip_listen_addr, "SIP Signaling başlatıldı.");
     
     let mut buf = [0; 65535];
     loop {
+        // ... (geri kalan kod aynı) ...
         let (len, addr) = sock.recv_from(&mut buf).await?;
         let sock_clone = Arc::clone(&sock);
         let config_clone = Arc::clone(&config);
@@ -103,6 +126,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
 }
+
+// ... (handle_sip_request, create_secure_grpc_channel, handle_bye, create_response, parse_complex_headers, extract_user_from_uri, extract_sdp_media_info fonksiyonları aynı kalacak,
+// zaten tracing makrolarını kullanıyorlar.)
+// Sadece handle_invite fonksiyonundaki bazı info! loglarına ek alanlar ekleyelim.
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id))]
 async fn handle_sip_request(
@@ -131,9 +158,6 @@ async fn handle_sip_request(
     }
 }
 
-// DOSYA: sentiric-sip-signaling-service/src/main.rs
-// create_secure_grpc_channel FONKSİYONUNUN DÜZELTİLMİŞ HALİ
-
 async fn create_secure_grpc_channel(url: &str, server_name: &str) -> Result<Channel, Box<dyn Error + Send + Sync>> {
     let cert_path = env::var("SIP_SIGNALING_SERVICE_CERT_PATH")?;
     let key_path = env::var("SIP_SIGNALING_SERVICE_KEY_PATH")?;
@@ -151,10 +175,6 @@ async fn create_secure_grpc_channel(url: &str, server_name: &str) -> Result<Chan
         .ca_certificate(ca_cert)
         .identity(identity);
 
-    // DÜZELTME BURADA:
-    // 1. Endpoint'i HTTPS şeması ve TLS yapılandırması ile oluştur.
-    // 2. Timeout ayarını yap.
-    // 3. connect() metodunu çağır ve SONUCUNU bekle (.await).
     let channel = Channel::from_shared(format!("https://{}", url))?
         .tls_config(tls_config)?
         .connect_timeout(Duration::from_secs(5))
@@ -190,10 +210,11 @@ async fn handle_invite(
     let to_uri = headers.get("To").cloned().unwrap_or_default();
     let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
     let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
+    
+    info!(%caller_id, %destination_number, "Gelen çağrı ayrıştırıldı.");
 
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     
-    // YENİ: user-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
     let user_channel = create_secure_grpc_channel(&config.user_service_url, "user-service").await?;
     let mut user_client = UserServiceClient::new(user_channel);
     match user_client.get_user(GetUserRequest { id: caller_id.clone() }).await {
@@ -202,7 +223,6 @@ async fn handle_invite(
         Err(e) => warn!(error = %e, "Kullanıcı doğrulanırken hata oluştu."),
     }
 
-    // YENİ: dialplan-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
     let dialplan_channel = create_secure_grpc_channel(&config.dialplan_service_url, "dialplan-service").await?;
     let mut dialplan_client = DialplanServiceClient::new(dialplan_channel);
     
@@ -217,7 +237,6 @@ async fn handle_invite(
     };
     info!(dialplan_id = %dialplan_res.dialplan_id, action = %dialplan_res.action.as_ref().map_or("", |a| &a.action), "Dialplan çözümlendi.");
 
-    // YENİ: media-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
     let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
     let mut media_client = MediaServiceClient::new(media_channel);
     
@@ -284,7 +303,6 @@ async fn handle_bye(
         if let Some(rtp_port) = rtp_port_to_release {
             info!(port = rtp_port, "Çağrı sonlandırılıyor, RTP portu serbest bırakılacak.");
             
-            // YENİ: media-service'i çağırırken sunucu adını doğru şekilde belirtiyoruz.
             let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
             let mut media_client = MediaServiceClient::new(media_channel);
 
