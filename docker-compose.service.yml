@@ -15,7 +15,7 @@ services:
       - ./.env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ../sentiric-infrastructure/postgres-init:/docker-entrypoint-initdb.d
+      - ../sentiric-config/postgres-init:/docker-entrypoint-initdb.d
     # ports:
     #   - "${POSTGRES_DB_PORT}:${POSTGRES_DB_PORT}"
     networks:
@@ -62,7 +62,7 @@ services:
     env_file:
       - ./.env
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     ports:
       - "${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}:${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}/udp"
       # - "${MEDIA_SERVICE_GRPC_PORT}:${MEDIA_SERVICE_GRPC_PORT}"
@@ -87,7 +87,7 @@ services:
     env_file:
       - ./.env
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
     # ports:
     #   - "${USER_SERVICE_GRPC_PORT}:${USER_SERVICE_GRPC_PORT}"
     networks:
@@ -113,7 +113,7 @@ services:
       - ./.env
 
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
 
     # ports:
     #   - "${DIALPLAN_SERVICE_PORT}:${DIALPLAN_SERVICE_PORT}"
@@ -143,7 +143,7 @@ services:
       - ./.env 
 
     volumes:
-      - ../sentiric-infrastructure/tls/certs:/etc/sentiric/tls:ro
+      - ../sentiric-config/tls/certs:/etc/sentiric/tls:ro
 
     # ports:
     #   - "${SIP_SIGNALING_SERVICE_PORT}:${SIP_SIGNALING_SERVICE_PORT}"
