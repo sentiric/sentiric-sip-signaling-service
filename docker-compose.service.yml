@@ -137,7 +137,7 @@ services:
       context: .
       dockerfile: Dockerfile      
       args:
-        SERVICE_NAME: sentiric-sip-signaling
+        SERVICE_NAME: sentiric-sip-signaling-service
 
     env_file: 
       - ./.env 
