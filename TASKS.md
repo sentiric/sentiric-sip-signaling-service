@@ -1,44 +1,33 @@
-# Sentiric SIP Signaling Service - Görev Listesi ve Yol Haritası
+# 🚦 Sentiric SIP Signaling Service - Görev Listesi
 
 Bu belge, servisin geliştirme önceliklerini ve gelecekte eklenecek SIP özelliklerini takip eder.
 
 ---
 
-### Faz 1: Çekirdek Çağrı Kurulumu (Core Call Setup)
+### Faz 1: Çekirdek Çağrı Kurulum ve Sonlandırma (Mevcut Durum)
 
-Bu fazın amacı, platformun temel gelen çağrı (`INVITE`) akışını uçtan uca, sağlam bir şekilde yönetmektir.
+Bu fazın amacı, platformun temel gelen çağrı (`INVITE`) ve sonlandırma (`BYE`) akışını uçtan uca, sağlam bir şekilde yönetmektir.
 
--   [x] **Temel `INVITE` İşleme:** Gelen SIP `INVITE` isteklerini alma ve yanıtlama.
--   [x] **gRPC Orkestrasyonu:** `user`, `dialplan` ve `media` servislerine gRPC ile danışma.
--   [x] **Asenkron Olay Yayınlama:** Başarılı çağrı kurulumunda `call.started` olayını RabbitMQ'ya gönderme.
--   [ ] **Tam NAT Desteği:** `Record-Route` ve `Via` header'larını doğru işleyerek farklı ağ topolojilerinde kararlı çalışma.
+-   [x] **`INVITE` İşleme:** Gelen SIP `INVITE` isteklerini alma ve `100 Trying`, `180 Ringing`, `200 OK` yanıtlarını üretme.
+-   [x] **gRPC Orkestrasyonu:** `user`, `dialplan` ve `media` servislerine sıralı ve güvenli (mTLS) gRPC çağrıları yapma.
+-   [x] **Asenkron Olay Yayınlama:** `call.started` ve `call.ended` olaylarını RabbitMQ'ya gönderme.
+-   [x] **`BYE` İşleme:** Aktif bir çağrıyı sonlandırma, ilgili medya portunu serbest bıraktırma ve `call.ended` olayını yayınlama.
+-   [x] **Aktif Çağrı Takibi:** Devam eden çağrıları ve ilgili port/trace ID'lerini hafızada tutma.
 
 ---
 
-### Faz 2: Kullanıcı Kaydı ve Durum Yönetimi (Registration & Presence)
+### Faz 2: Gelişmiş Çağrı Kontrolü ve Kullanıcı Kaydı (Sıradaki Öncelik)
 
 Bu faz, platformu statik bir çağrı alıcısından, kullanıcıların bağlanabildiği dinamik bir SIP sunucusuna dönüştürecektir.
 
--   [ ] **`REGISTER` Metodu Desteği**
-    -   **Görev ID:** `sip-task-001`
-    -   **Açıklama:** SIP istemcilerinin (softphone, mobil uygulama) platforma kayıt olmasını (`REGISTER`) ve kimlik doğrulaması yapmasını sağla. Bu, `user-service` ile entegre çalışacaktır.
+-   [ ] **Görev ID: SIG-001 - `REGISTER` Metodu Desteği**
+    -   **Açıklama:** SIP istemcilerinin (softphone, mobil uygulama) platforma kayıt olmasını (`REGISTER`) ve `user-service` üzerinden kimlik doğrulaması yapmasını sağla. Bu, platformdan dışarıya doğru arama yapmanın ilk adımıdır.
     -   **Durum:** ⬜ Planlandı.
 
--   [ ] **Durum Yönetimi (`SUBSCRIBE`/`NOTIFY`)**
-    -   **Görev ID:** `sip-task-002`
-    -   **Açıklama:** Kullanıcıların "meşgul", "müsait" gibi durumlarını (presence) yönet ve diğer kullanıcılara bildir.
+-   [ ] **Görev ID: SIG-002 - `CANCEL` Metodu Desteği**
+    -   **Açıklama:** Bir `INVITE` isteği gönderildikten sonra, ancak `200 OK` yanıtı alınmadan önce çağrının iptal edilmesini sağlayan `CANCEL` isteğini işle. İlgili medya portunu serbest bırak.
     -   **Durum:** ⬜ Planlandı.
 
----
-
-### Faz 3: Gelişmiş Çağrı Kontrolü (Advanced Call Control)
-
--   [ ] **Çağrı Sonlandırma (`BYE`) ve İptal (`CANCEL`)**
-    -   **Görev ID:** `sip-task-003`
-    -   **Açıklama:** Aktif bir çağrının sonlandırılması veya kurulum aşamasında iptal edilmesi senaryolarını yönet. İlgili `call.ended` olayını RabbitMQ'ya yayınla.
-    -   **Durum:** ⬜ Planlandı.
-
--   [ ] **Çağrı Transferi (`REFER`)**
-    -   **Görev ID:** `sip-task-004`
-    -   **Açıklama:** Bir çağrıyı başka bir SIP kullanıcısına veya harici bir numaraya yönlendirme yeteneği ekle.
+-   [ ] **Görev ID: SIG-003 - Çağrı Transferi (`REFER`)**
+    -   **Açıklama:** Bir agent'ın veya AI'ın, aktif bir çağrıyı başka bir SIP kullanıcısına veya harici bir numaraya yönlendirmesini sağlayan `REFER` metodunu implemente et.
     -   **Durum:** ⬜ Planlandı.

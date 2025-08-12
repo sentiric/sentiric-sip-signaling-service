@@ -1,90 +1,51 @@
-# 🛡️ Sentiric SIP Signaling Service
+# 🚦 Sentiric SIP Signaling Service
 
-**Description:** This is the core edge service for managing SIP call signaling (setup, management, and termination) within the Sentiric platform. Built with **Rust** for high performance, memory safety, and low-level network control, it acts as the primary orchestrator for the synchronous phase of call flows by interacting with other specialized microservices.
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+[![Language](https://img.shields.io/badge/language-Rust-orange.svg)]()
+[![Protocol](https://img.shields.io/badge/protocol-SIP,_gRPC,_RabbitMQ-green.svg)]()
 
-**Core Responsibilities:**
-*   **High-Performance SIP Processing:** Listens for, parses, and validates SIP messages over UDP. It is specifically hardened to handle real-world telecommunication challenges, such as correctly managing `Via` and `Record-Route` headers from upstream proxies.
-*   **Synchronous Call Flow Orchestration:** Rapidly coordinates the initial steps of a call by making **gRPC** calls to:
-    *   `sentiric-user-service` for user authentication.
-    *   `sentiric-dialplan-service` for dynamic call routing decisions.
-    *   `sentiric-media-service` for allocating real-time media (RTP) sessions.
-*   **Asynchronous Event Publishing:** After successfully establishing a call, it decouples the long-running AI dialogue logic by publishing a `call.started` event to a **RabbitMQ** message queue, making the platform resilient and scalable.
-*   **Security:** Acts as the first line of defense for the platform's real-time communication infrastructure.
+**Sentiric SIP Signaling Service**, Sentiric platformunun **senkron çağrı kurulum orkestratörüdür**. Yüksek performans, bellek güvenliği ve düşük seviye ağ kontrolü için **Rust** ile yazılmıştır. Görevi, `sip-gateway`'den gelen temizlenmiş SIP isteklerini alıp, bir çağrıyı hayata geçirmek için gereken tüm adımları anlık olarak koordine etmektir.
 
-**Technology Stack:**
-*   **Language:** Rust
-*   **Async Runtime:** Tokio
-*   **Inter-Service Communication:**
-    *   **gRPC (with Tonic):** For fast, type-safe, synchronous commands.
-    *   **AMQP (with Lapin):** For resilient, asynchronous eventing via RabbitMQ.
-*   **Containerization:** Docker (Multi-stage builds for minimal, secure images).
+## 🎯 Temel Sorumluluklar
 
-**API Interactions (Client Of):**
-*   **`sentiric-user-service` (gRPC):** For user authentication.
-*   **`sentiric-dialplan-service` (gRPC):** For obtaining call routing decisions.
-*   **`sentiric-media-service` (gRPC):** For requesting RTP session creation.
-*   **`RabbitMQ` (AMQP):** Publishes `call.started` events to decouple the agent/AI workflow.
+*   **SIP Mesaj İşleme:** `INVITE`, `BYE` gibi temel SIP metotlarını işler ve standartlara uygun yanıtlar (`100 Trying`, `200 OK`) üretir.
+*   **Senkron Orkestrasyon:** Bir çağrıyı kurmak için **gRPC** üzerinden sıralı olarak diğer uzman servisleri çağırır:
+    1.  `user-service`: Arayanı doğrulamak için.
+    2.  `dialplan-service`: Çağrının ne yapması gerektiğini öğrenmek için.
+    3.  `media-service`: Gerçek zamanlı ses (RTP) kanalı için bir port ayırmak.
+*   **Asenkron Devir:** Çağrı başarıyla kurulduktan sonra, uzun sürecek olan AI diyalog mantığını platformun asenkron beyni olan `agent-service`'e devreder. Bunu, `call.started` olayını **RabbitMQ**'ya yayınlayarak yapar.
+*   **Çağrı Sonlandırma:** `BYE` isteği aldığında, ilgili medya portunu `media-service`'e serbest bıraktırır ve `call.ended` olayını RabbitMQ'ya yayınlar.
 
-**Asynchronous Event Publishing:** After successfully establishing a call, it decouples the long-running AI dialogue logic by publishing a `call.started` event to a **RabbitMQ** message queue. Similarly, when a call is terminated (`BYE`), it publishes a `call.ended` event, allowing asynchronous services like `cdr-service` to complete the call lifecycle. This makes the platform resilient and scalable.
+## 🛠️ Teknoloji Yığını
 
-## Getting Started
+*   **Dil:** Rust
+*   **Asenkron Runtime:** Tokio
+*   **Servisler Arası İletişim:**
+    *   **gRPC (Tonic ile):** Senkron, tip-güvenli komutlar için.
+    *   **AMQP (Lapin ile):** Asenkron olay yayınlama için (RabbitMQ).
+*   **Gözlemlenebilirlik:** `tracing` ile yapılandırılmış, ortama duyarlı loglama.
 
-### Prerequisites
-- Docker and Docker Compose
-- Git
-- All Sentiric repositories cloned into a single workspace directory.
+## 🔌 API Etkileşimleri
 
-### Local Development & Platform Setup
-This service is not designed to run standalone. It is an integral part of the Sentiric platform and must be run via the central orchestrator in the `sentiric-infrastructure` repository.
+*   **Gelen (Protokol):**
+    *   `sentiric-sip-gateway-service` (SIP/UDP): Temizlenmiş SIP isteklerini alır.
+*   **Giden (İstemci):**
+    *   `sentiric-user-service` (gRPC): Kullanıcı doğrulaması.
+    *   `sentiric-dialplan-service` (gRPC): Yönlendirme kararı.
+    *   `sentiric-media-service` (gRPC): Medya portu yönetimi.
+    *   `RabbitMQ` (AMQP): `call.started` ve `call.ended` olaylarını yayınlama.
 
-1.  **Clone all repositories:**
-    ```bash
-    # In your workspace directory
-    git clone https://github.com/sentiric/sentiric-infrastructure.git
-    git clone https://github.com/sentiric/sentiric-core-interfaces.git
-    git clone https://github.com/sentiric/sentiric-sip-signaling-service.git
-    # ... clone other required services
-    ```
+## 🚀 Yerel Geliştirme
 
-2.  **Initialize Submodules:** This service depends on `sentiric-core-interfaces` using a Git submodule.
-    ```bash
-    cd sentiric-sip-signaling-service
-    git submodule update --init --recursive
-    cd .. 
-    ```
+1.  **Bağımlılıkları Yükleyin:** `cargo build`
+2.  **`.env` Dosyasını Oluşturun:** `sentiric-agent-service/.env.docker` dosyasını referans alarak gerekli servis URL'lerini ve sertifika yollarını tanımlayın.
+3.  **Servisi Çalıştırın:** `cargo run --release`
 
-3.  **Configure Environment:**
-    ```bash
-    cd sentiric-infrastructure
-    cp .env.local.example .env
-    # Open .env and set PUBLIC_IP and other variables
-    ```
+## 🤝 Katkıda Bulunma
 
-4.  **Run the platform:** The central Docker Compose file will automatically build and run this service.
-    ```bash
-    docker network create sentiric-net
+Katkılarınızı bekliyoruz! Lütfen projenin ana [Sentiric Governance](https://github.com/sentiric/sentiric-governance) reposundaki kodlama standartlarına ve katkıda bulunma rehberine göz atın.
 
-    # From the sentiric-infrastructure directory
-    docker compose up --build -d
-    ```
+---
+## 🏛️ Anayasal Konum
 
-5.  **View Logs:**
-    ```bash
-    docker compose logs -f sip-signaling
-    ```
-
-## Configuration
-
-All configuration is managed via environment variables passed from the `sentiric-infrastructure` repository's `.env` file. See the `.env.local.example` file in that repository for a complete list.
-
-## Deployment
-
-This service is designed for containerized deployment. The multi-stage `Dockerfile` ensures a small and secure production image. The CI/CD pipeline in `.github/workflows/docker-ci.yml` automatically builds and pushes the image to the GitHub Container Registry (`ghcr.io`).
-
-## Contributing
-
-We welcome contributions! Please refer to the [Sentiric Governance](https://github.com/sentiric/sentiric-governance) repository for detailed coding standards, contribution guidelines, and the overall project vision.
-
-## License
-
-This project is licensed under the [License](LICENSE).
+Bu servis, [Sentiric Anayasası'nın (v11.0)](https://github.com/sentiric/sentiric-governance/blob/main/docs/blueprint/Architecture-Overview.md) **Zeka & Orkestrasyon Katmanı**'nda yer alan merkezi bir bileşendir.
