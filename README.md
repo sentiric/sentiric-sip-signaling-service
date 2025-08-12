@@ -25,6 +25,8 @@
 *   **`sentiric-media-service` (gRPC):** For requesting RTP session creation.
 *   **`RabbitMQ` (AMQP):** Publishes `call.started` events to decouple the agent/AI workflow.
 
+**Asynchronous Event Publishing:** After successfully establishing a call, it decouples the long-running AI dialogue logic by publishing a `call.started` event to a **RabbitMQ** message queue. Similarly, when a call is terminated (`BYE`), it publishes a `call.ended` event, allowing asynchronous services like `cdr-service` to complete the call lifecycle. This makes the platform resilient and scalable.
+
 ## Getting Started
 
 ### Prerequisites
