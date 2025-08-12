@@ -171,13 +171,16 @@ async fn handle_invite(
     };
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
     
-    if active_calls.lock().await.contains_key(&call_id) {
-        warn!(%call_id, "Yinelenen INVITE isteği alındı ve atlandı. 486 Busy Here gönderiliyor.");
-        sock.send_to(create_response("486 Busy Here", &headers, None, &config).as_bytes(), addr).await?;
-        return Ok(());
-    }
-    
+    // GÜÇLENDİRİLMİŞ KORUMA: Bir çağrı için zaten işlem başlatıldıysa, tekrar başlatma.
+    // .insert() metodu, eğer anahtar zaten varsa eski değeri döndürür. Bu, atomik bir "kontrol et ve ekle" işlemidir.
     let trace_id = format!("trace-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 12));
+    let mut active_calls_guard = active_calls.lock().await;
+    if active_calls_guard.insert(call_id.clone(), (0, trace_id.clone())).is_some() {
+         warn!(%call_id, "Yinelenen INVITE isteği alındı ve atlandı (race condition koruması).");
+         return Ok(());
+    }
+    drop(active_calls_guard);
+
     tracing::Span::current().record("call_id", &call_id as &str);
     tracing::Span::current().record("trace_id", &trace_id as &str);
 
@@ -189,7 +192,6 @@ async fn handle_invite(
 
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     
-    // GÜNCELLEME: Artık FindUserByContact'ı çağırıyoruz.
     let mut user_req = TonicRequest::new(FindUserByContactRequest {
         contact_type: "phone".to_string(),
         contact_value: caller_id.clone(),
@@ -198,7 +200,6 @@ async fn handle_invite(
 
     let user_channel = create_secure_grpc_channel(&config.user_service_url, "user-service").await?;
     let mut user_client = UserServiceClient::new(user_channel);
-    // Sonucu şu an için logluyoruz, dialplan'a ham olarak geçilecek.
     if let Ok(user_res) = user_client.find_user_by_contact(user_req).await {
         if let Some(user) = user_res.into_inner().user {
              info!(user_id = %user.id, "Kullanıcı doğrulama başarılı.");
@@ -243,7 +244,7 @@ async fn handle_invite(
     let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
     
     active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone()));
-    info!(port = server_rtp_port, "Yeni aktif çağrı haritaya eklendi.");
+    info!(port = server_rtp_port, "Aktif çağrı haritası gerçek port ile güncellendi.");
     
     sock.send_to(ok_response.as_bytes(), addr).await?;
     info!("Arama başarıyla cevaplandı!");
@@ -292,8 +293,6 @@ async fn handle_bye(
             if let Err(e) = media_client.release_port(media_req).await {
                 error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu.");
             }
-            
-            // YENİ: call.ended olayını yayınla
             let event_payload = serde_json::json!({
                 "eventType": "call.ended",
                 "traceId": trace_id,
@@ -302,7 +301,6 @@ async fn handle_bye(
             });
             rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await?.await?;
             info!("'call.ended' olayı başarıyla yayınlandı.");
-
         } else {
             warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
         }
