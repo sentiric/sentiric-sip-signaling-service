@@ -12,7 +12,6 @@ use chrono::Utc;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use tonic::{Request as TonicRequest, transport::{Certificate, Channel, ClientTlsConfig, Identity}};
-// DÜZELTME 1: "Level" import'u kaldırıldı.
 use tracing::{error, info, instrument, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -25,7 +24,6 @@ use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
     media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest},
-    // DİKKAT: Artık user.v1'den FindUserByContactRequest'i kullanıyoruz.
     user::v1::{user_service_client::UserServiceClient, FindUserByContactRequest},
 };
 
@@ -191,6 +189,7 @@ async fn handle_invite(
 
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     
+    // GÜNCELLEME: Artık FindUserByContact'ı çağırıyoruz.
     let mut user_req = TonicRequest::new(FindUserByContactRequest {
         contact_type: "phone".to_string(),
         contact_value: caller_id.clone(),
@@ -199,9 +198,14 @@ async fn handle_invite(
 
     let user_channel = create_secure_grpc_channel(&config.user_service_url, "user-service").await?;
     let mut user_client = UserServiceClient::new(user_channel);
-
-    // DÜZELTME 2: Değişkenin bilerek kullanılmadığını belirtiyoruz.
-    let _user_res = user_client.find_user_by_contact(user_req).await;
+    // Sonucu şu an için logluyoruz, dialplan'a ham olarak geçilecek.
+    if let Ok(user_res) = user_client.find_user_by_contact(user_req).await {
+        if let Some(user) = user_res.into_inner().user {
+             info!(user_id = %user.id, "Kullanıcı doğrulama başarılı.");
+        }
+    } else {
+        warn!("Kullanıcı doğrulanırken hata oluştu veya bulunamadı.");
+    }
 
     let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
         caller_contact_value: caller_id.clone(),
@@ -288,6 +292,8 @@ async fn handle_bye(
             if let Err(e) = media_client.release_port(media_req).await {
                 error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu.");
             }
+            
+            // YENİ: call.ended olayını yayınla
             let event_payload = serde_json::json!({
                 "eventType": "call.ended",
                 "traceId": trace_id,
@@ -296,6 +302,7 @@ async fn handle_bye(
             });
             rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await?.await?;
             info!("'call.ended' olayı başarıyla yayınlandı.");
+
         } else {
             warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
         }

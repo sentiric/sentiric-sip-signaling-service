@@ -19,7 +19,8 @@ dotenv = "0.15"
 once_cell = "1.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prost = "0.12"
-rand_distr = "0.4.3" # Alphanumeric için bu gerekli olabilir
+# YENİ: rand_distr kütüphanesini açıkça ekliyoruz.
+rand_distr = "0.4.3"
 
 # YENİ KONTRAK VERSİYONU
 [dependencies.sentiric-contracts]
