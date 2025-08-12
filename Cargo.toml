@@ -25,4 +25,4 @@ rand_distr = "0.4.3"
 # YENİ KONTRAK VERSİYONU
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
-tag = "v1.5.2"
+tag = "v1.6.0"
