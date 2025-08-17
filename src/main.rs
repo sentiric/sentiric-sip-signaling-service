@@ -1,4 +1,4 @@
-// ========== FILE: sentiric-sip-signaling-service/src/main.rs (Nihai ve v1.7.5 Uyumlu) ==========
+// ========== FILE: sentiric-sip-signaling-service/src/main.rs (Nihai "Sadece Sinyal" Mimarisi) ==========
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
@@ -28,7 +28,7 @@ use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
     media::v1::{
-        media_service_client::MediaServiceClient, AllocatePortRequest, PlayAudioRequest,
+        media_service_client::MediaServiceClient, AllocatePortRequest,
         ReleasePortRequest,
     },
     user::v1::{user_service_client::UserServiceClient, FindUserByContactRequest},
@@ -256,113 +256,89 @@ async fn handle_invite(
     
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
 
-    // 1. Medya Portunu Hemen Al
-    let media_channel =
-        create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
-    let mut media_client = MediaServiceClient::new(media_channel.clone());
-    let mut media_req = TonicRequest::new(AllocatePortRequest {
-        call_id: call_id.clone(),
+    // --- MİMARİ DEĞİŞİKLİĞİ ---
+    // Adım 1: Arka planda Dialplan'i Çözümle
+    let from_uri = headers.get("From").cloned().unwrap_or_default();
+    let to_uri = headers.get("To").cloned().unwrap_or_default();
+    let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
+    let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
+
+    let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
+        caller_contact_value: caller_id,
+        destination_number,
     });
+    dialplan_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+    
+    let dialplan_channel = create_secure_grpc_channel(&config.dialplan_service_url, "dialplan-service").await?;
+    let mut dialplan_client = DialplanServiceClient::new(dialplan_channel);
+    
+    let dialplan_res = match dialplan_client.resolve_dialplan(dialplan_req).await {
+        Ok(res) => res.into_inner(),
+        Err(e) => {
+            error!(error = %e, "Dialplan çözümlenirken kritik hata.");
+            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
+            return Err(e.into());
+        }
+    };
+    info!(dialplan_id = %dialplan_res.dialplan_id, "Dialplan başarıyla çözümlendi.");
+
+    // Adım 2: Medya Portunu Al
+    let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
+    let mut media_client = MediaServiceClient::new(media_channel);
+    let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
     media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
     
     let server_rtp_port = match media_client.allocate_port(media_req).await {
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
             error!(error = %e, "Medya portu alınamadı.");
-            sock.send_to(
-                create_response("503 Service Unavailable", &headers, None, &config).as_bytes(),
-                addr,
-            )
-            .await?;
+            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
     };
-    info!(rtp_port = server_rtp_port, "Medya portu anında ayrıldı.");
+    info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
 
-    // 2. Bekleme Anonsunu ANINDA Çalmaya Başla
-    let caller_rtp_addr = extract_sdp_media_info(request_str).unwrap_or_default();
-    let mut play_req = TonicRequest::new(PlayAudioRequest {
-        rtp_target_addr: caller_rtp_addr.clone(),
-        server_rtp_port,
-        audio_uri: "file:///audio/tr/system/connecting.wav".to_string(), 
-    });
-    play_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+    // Adım 3: Çağrıyı Aktif Olarak Kaydet ve Kur (200 OK)
+    active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone()));
     
-    let mut media_client_for_play = MediaServiceClient::new(media_channel);
-    if let Err(e) = media_client_for_play.play_audio(play_req).await {
-        warn!(error = %e, "Bekleme anonsu çalınamadı, ancak devam ediliyor.");
-    } else {
-        info!("'Anonsla Beklet' başarıyla tetiklendi.");
-    }
-    
-    // 3. Çağrıyı Aktif Olarak Kaydet ve 200 OK ile Kur
-    active_calls
-        .lock()
-        .await
-        .insert(call_id.clone(), (server_rtp_port, trace_id.clone()));
-
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
+    
+    // Önce Ringing göndererek daha standart bir akış sağlayalım.
+    sock.send_to(create_response("180 Ringing", &headers, None, &config).as_bytes(), addr).await?;
+    sleep(Duration::from_millis(100)).await;
+
     let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
     sock.send_to(ok_response.as_bytes(), addr).await?;
-    info!("Çağrı hemen yanıtlandı (200 OK gönderildi).");
+    info!("Çağrı başarıyla yanıtlandı (200 OK gönderildi).");
     
-    // 4. Arka Planda Asenkron Görevi Başlat
-    let from_uri = headers.get("From").cloned().unwrap_or_default();
-    let to_uri = headers.get("To").cloned().unwrap_or_default();
-    let request_str_owned = request_str.to_string();
-    
-    tokio::spawn(async move {
-        let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
-        let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
-
-        let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
-            caller_contact_value: caller_id,
-            destination_number,
-        });
-        dialplan_req.metadata_mut().insert("x-trace-id", trace_id.parse().unwrap());
-        
-        match create_secure_grpc_channel(&config.dialplan_service_url, "dialplan-service").await {
-            Ok(dialplan_channel) => {
-                let mut dialplan_client = DialplanServiceClient::new(dialplan_channel);
-                match dialplan_client.resolve_dialplan(dialplan_req).await {
-                    Ok(res) => {
-                        let dialplan_res = res.into_inner();
-                        info!(dialplan_id = %dialplan_res.dialplan_id, "Dialplan arka planda çözümlendi.");
-                        
-                        let event_payload = serde_json::json!({
-                            "eventType": "call.started",
-                            "traceId": trace_id,
-                            "callId": call_id,
-                            "from": from_uri,
-                            "to": to_uri,
-                            "media": { 
-                                "server_rtp_port": server_rtp_port, 
-                                "caller_rtp_addr": extract_sdp_media_info(&request_str_owned).unwrap_or_default()
-                            },
-                            "dialplan": dialplan_res,
-                            "timestamp": Utc::now().to_rfc3339(),
-                        });
-
-                        let publish_result = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
-                        if let Ok(confirmation) = publish_result {
-                            if let Ok(_) = confirmation.await {
-                                info!("'call.started' olayı yayınlandı.");
-                            } else {
-                                error!("RabbitMQ 'call.started' onayı alınamadı.");
-                            }
-                        } else {
-                            error!("RabbitMQ'ya 'call.started' yayınlanamadı.");
-                        }
-                    },
-                    Err(e) => error!(error = %e, "Arka plan dialplan çözümlemesi başarısız."),
-                }
-            },
-            Err(e) => error!(error = %e, "Dialplan servisine bağlanılamadı."),
-        }
+    // Adım 4: call.started olayını RabbitMQ'ya yayınla
+    let event_payload = serde_json::json!({
+        "eventType": "call.started",
+        "traceId": trace_id,
+        "callId": call_id,
+        "from": from_uri,
+        "to": to_uri,
+        "media": { 
+            "server_rtp_port": server_rtp_port, 
+            "caller_rtp_addr": extract_sdp_media_info(request_str).unwrap_or_default()
+        },
+        "dialplan": dialplan_res,
+        "timestamp": Utc::now().to_rfc3339(),
     });
 
+    let publish_result = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
+    if let Ok(confirmation) = publish_result {
+        if confirmation.await.is_ok() {
+            info!("'call.started' olayı yayınlandı.");
+        } else {
+            error!("RabbitMQ 'call.started' onayı alınamadı.");
+        }
+    } else {
+        error!("RabbitMQ'ya 'call.started' yayınlanamadı.");
+    }
+    
     Ok(())
 }
 
