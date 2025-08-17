@@ -28,6 +28,9 @@ use sentiric_contracts::sentiric::{
     user::v1::{user_service_client::UserServiceClient, FindUserByContactRequest},
 };
 
+use tonic::service::interceptor; // interceptor'ı import etmeye gerek yok, Channel::builder yeterli
+
+
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
 type ActiveCalls = Arc<Mutex<HashMap<String, (u32, String)>>>; 
@@ -165,11 +168,18 @@ async fn create_secure_grpc_channel(url: &str, server_name: &str) -> Result<Chan
         .domain_name(server_name)
         .ca_certificate(ca_cert)
         .identity(identity);
-    let channel = Channel::from_shared(format!("https://{}", url))?
+    
+    // --- DAYANIKLILIK İYİLEŞTİRMESİ ---
+    let endpoint = Channel::from_shared(format!("https://{}", url))?
         .tls_config(tls_config)?
         .connect_timeout(Duration::from_secs(5))
-        .connect()
-        .await?;
+        // YENİ: keep_alive_while_idle(true) ile bağlantının kopmasını zorlaştır.
+        .keep_alive_while_idle(true)
+        // YENİ: Bağlantı koptuğunda ne kadar süre yeniden deneneceğini belirt.
+        .timeout(Duration::from_secs(10));
+    
+    let channel = endpoint.connect().await?;
+    // --- İYİLEŞTİRME SONU ---
     Ok(channel)
 }
 
