@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
+use std::fmt; // YENİ: Manuel Debug implementasyonu için eklendi
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -31,7 +32,8 @@ static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
 type ActiveCalls = Arc<Mutex<HashMap<String, (u32, String)>>>; 
 
-#[derive(Debug, Clone)]
+// GÜVENLİK DÜZELTMESİ: #[derive(Debug)] kaldırıldı.
+#[derive(Clone)]
 struct AppConfig {
     sip_listen_addr: SocketAddr,
     sip_public_ip: String,
@@ -40,6 +42,21 @@ struct AppConfig {
     user_service_url: String,
     rabbitmq_url: String,
     env: String,
+}
+
+// GÜVENLİK DÜZELTMESİ: Hassas bilgileri loglardan gizlemek için manuel Debug implementasyonu.
+impl fmt::Debug for AppConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AppConfig")
+            .field("sip_listen_addr", &self.sip_listen_addr)
+            .field("sip_public_ip", &self.sip_public_ip)
+            .field("dialplan_service_url", &self.dialplan_service_url)
+            .field("media_service_url", &self.media_service_url)
+            .field("user_service_url", &self.user_service_url)
+            .field("rabbitmq_url", &"***REDACTED***") // Hassas bilgiyi gizle
+            .field("env", &self.env)
+            .finish()
+    }
 }
 
 impl AppConfig {
