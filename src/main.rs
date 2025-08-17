@@ -26,9 +26,10 @@ use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
-    media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest},
-    // GÜNCELLEME: `FindUserByContactRequest` artık `dialplan_service`'ten geldiği için buradan kaldırıldı.
-    // Bu, derleyici uyarısını çözecektir.
+    media::v1::{
+        media_service_client::MediaServiceClient, AllocatePortRequest, PlayAudioRequest,
+        ReleasePortRequest,
+    },
 };
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
@@ -41,7 +42,7 @@ struct AppConfig {
     sip_public_ip: String,
     dialplan_service_url: String,
     media_service_url: String,
-    user_service_url: String, // Bu hala `dialplan_service` için gerekli olabilir.
+    user_service_url: String,
     rabbitmq_url: String,
     env: String,
 }
@@ -253,8 +254,9 @@ async fn handle_invite(
     
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
 
+    // 1. Medya Portunu Hemen Al
     let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
-    let mut media_client = MediaServiceClient::new(media_channel);
+    let mut media_client = MediaServiceClient::new(media_channel.clone());
     let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
     media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
     
@@ -262,12 +264,29 @@ async fn handle_invite(
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
             error!(error = %e, "Medya portu alınamadı.");
-            sock.send_to(create_response("500 Server Internal Error", &headers, None, &config).as_bytes(), addr).await?;
+            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
     };
     info!(rtp_port = server_rtp_port, "Medya portu anında ayrıldı.");
 
+    // 2. Bekleme Anonsunu ANINDA Çalmaya Başla
+    let caller_rtp_addr = extract_sdp_media_info(request_str).unwrap_or_default();
+    let mut play_req = TonicRequest::new(PlayAudioRequest {
+        rtp_target_addr: caller_rtp_addr.clone(),
+        server_rtp_port,
+        audio_uri: "file:///audio/tr/system/connecting.wav".to_string(), 
+    });
+    play_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+    
+    let mut media_client_for_play = MediaServiceClient::new(media_channel);
+    if let Err(e) = media_client_for_play.play_audio(play_req).await {
+        warn!(error = %e, "Bekleme anonsu çalınamadı, ancak devam ediliyor.");
+    } else {
+        info!("'Anonsla Beklet' başarıyla tetiklendi.");
+    }
+    
+    // 3. Çağrıyı Aktif Olarak Kaydet ve 200 OK ile Kur
     active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone()));
 
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
@@ -276,11 +295,12 @@ async fn handle_invite(
     let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
     sock.send_to(ok_response.as_bytes(), addr).await?;
     info!("Çağrı hemen yanıtlandı (200 OK gönderildi).");
-
+    
+    // 4. Arka Planda Asenkron Görevi Başlat
     let from_uri = headers.get("From").cloned().unwrap_or_default();
     let to_uri = headers.get("To").cloned().unwrap_or_default();
     let request_str_owned = request_str.to_string();
-
+    
     tokio::spawn(async move {
         let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
         let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
