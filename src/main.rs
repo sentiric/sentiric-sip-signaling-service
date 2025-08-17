@@ -1,3 +1,4 @@
+// ========== FILE: sentiric-sip-signaling-service/src/main.rs (Nihai ve v1.7.5 Uyumlu) ==========
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
@@ -32,7 +33,6 @@ use sentiric_contracts::sentiric::{
     },
     user::v1::{user_service_client::UserServiceClient, FindUserByContactRequest},
 };
-
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
@@ -257,16 +257,23 @@ async fn handle_invite(
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
 
     // 1. Medya Portunu Hemen Al
-    let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
+    let media_channel =
+        create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
     let mut media_client = MediaServiceClient::new(media_channel.clone());
-    let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
+    let mut media_req = TonicRequest::new(AllocatePortRequest {
+        call_id: call_id.clone(),
+    });
     media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
     
     let server_rtp_port = match media_client.allocate_port(media_req).await {
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
             error!(error = %e, "Medya portu alınamadı.");
-            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
+            sock.send_to(
+                create_response("503 Service Unavailable", &headers, None, &config).as_bytes(),
+                addr,
+            )
+            .await?;
             return Err(e.into());
         }
     };
@@ -289,7 +296,10 @@ async fn handle_invite(
     }
     
     // 3. Çağrıyı Aktif Olarak Kaydet ve 200 OK ile Kur
-    active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone()));
+    active_calls
+        .lock()
+        .await
+        .insert(call_id.clone(), (server_rtp_port, trace_id.clone()));
 
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
@@ -306,23 +316,6 @@ async fn handle_invite(
     tokio::spawn(async move {
         let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
         let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
-
-        // Arka planda user_service'e yapılan çağrı artık zorunlu değil,
-        // bu bilgi dialplan'den gelecek. Ama loglama için kalabilir.
-        let mut user_req = TonicRequest::new(FindUserByContactRequest {
-             contact_type: "phone".to_string(),
-             contact_value: caller_id.clone(),
-        });
-        user_req.metadata_mut().insert("x-trace-id", trace_id.parse().unwrap());
-        
-        if let Ok(user_channel) = create_secure_grpc_channel(&config.user_service_url, "user-service").await {
-            let mut user_client = UserServiceClient::new(user_channel);
-            if user_client.find_user_by_contact(user_req).await.is_ok() {
-                 info!("Kullanıcı arka planda doğrulandı.");
-            } else {
-                 warn!("Kullanıcı arka planda doğrulanamadı.");
-            }
-        }
 
         let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
             caller_contact_value: caller_id,
