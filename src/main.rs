@@ -30,7 +30,9 @@ use sentiric_contracts::sentiric::{
         media_service_client::MediaServiceClient, AllocatePortRequest, PlayAudioRequest,
         ReleasePortRequest,
     },
+    user::v1::{user_service_client::UserServiceClient, FindUserByContactRequest},
 };
+
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
@@ -305,6 +307,23 @@ async fn handle_invite(
         let caller_id = extract_user_from_uri(&from_uri).unwrap_or_else(|| "unknown".to_string());
         let destination_number = extract_user_from_uri(&to_uri).unwrap_or_else(|| "unknown".to_string());
 
+        // Arka planda user_service'e yapılan çağrı artık zorunlu değil,
+        // bu bilgi dialplan'den gelecek. Ama loglama için kalabilir.
+        let mut user_req = TonicRequest::new(FindUserByContactRequest {
+             contact_type: "phone".to_string(),
+             contact_value: caller_id.clone(),
+        });
+        user_req.metadata_mut().insert("x-trace-id", trace_id.parse().unwrap());
+        
+        if let Ok(user_channel) = create_secure_grpc_channel(&config.user_service_url, "user-service").await {
+            let mut user_client = UserServiceClient::new(user_channel);
+            if user_client.find_user_by_contact(user_req).await.is_ok() {
+                 info!("Kullanıcı arka planda doğrulandı.");
+            } else {
+                 warn!("Kullanıcı arka planda doğrulanamadı.");
+            }
+        }
+
         let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
             caller_contact_value: caller_id,
             destination_number,
@@ -380,11 +399,16 @@ async fn handle_bye(
             let mut media_req = TonicRequest::new(ReleasePortRequest { rtp_port });
             media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
             
-            let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
+            let media_channel =
+                create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
             let mut media_client = MediaServiceClient::new(media_channel);
 
             if let Err(e) = media_client.release_port(media_req).await {
-                error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu.");
+                error!(
+                    error = %e,
+                    port = rtp_port,
+                    "Media service'e port serbest bırakma isteği gönderilirken hata oluştu."
+                );
             } else {
                 info!(port = rtp_port, "RTP portu başarıyla serbest bırakıldı.");
             }
@@ -395,7 +419,15 @@ async fn handle_bye(
                 "callId": call_id,
                 "timestamp": Utc::now().to_rfc3339(),
             });
-            let publish_result = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
+            let publish_result = rabbit_channel
+                .basic_publish(
+                    RABBITMQ_EXCHANGE_NAME,
+                    "",
+                    BasicPublishOptions::default(),
+                    event_payload.to_string().as_bytes(),
+                    BasicProperties::default().with_delivery_mode(2),
+                )
+                .await;
              if let Ok(confirmation) = publish_result {
                 if let Ok(_) = confirmation.await {
                     info!("'call.ended' olayı başarıyla yayınlandı.");
@@ -412,14 +444,35 @@ async fn handle_bye(
     Ok(())
 }
 
-fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
+fn create_response(
+    status_line: &str,
+    headers: &HashMap<String, String>,
+    sdp: Option<&str>,
+    config: &AppConfig,
+) -> String {
     let body = sdp.unwrap_or("");
     let content_length = body.len();
-    let record_route_lines = headers.get("Record-Route").map_or(String::new(), |routes| routes.split(", ").map(|route| format!("Record-Route: {}\r\n", route)).collect::<String>());
-    let via_lines = headers.get("Via").map_or(String::new(), |vias| vias.split(", ").map(|via| format!("Via: {}\r\n", via)).collect::<String>());
+    let record_route_lines = headers
+        .get("Record-Route")
+        .map_or(String::new(), |routes| {
+            routes
+                .split(", ")
+                .map(|route| format!("Record-Route: {}\r\n", route))
+                .collect::<String>()
+        });
+    let via_lines = headers.get("Via").map_or(String::new(), |vias| {
+        vias.split(", ")
+            .map(|via| format!("Via: {}\r\n", via))
+            .collect::<String>()
+    });
     let empty_string = String::new();
     let cseq_full = headers.get("CSeq").unwrap_or(&empty_string);
-    let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
+    let contact_header = format!(
+        "<sip:{}@{}:{}>",
+        "sentiric-signal",
+        config.sip_public_ip,
+        config.sip_listen_addr.port()
+    );
     format!(
         "SIP/2.0 {}\r\n{}\
         {}\
@@ -433,11 +486,16 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
         Content-Length: {}\r\n\
         \r\n\
         {}",
-        status_line, via_lines, record_route_lines,
+        status_line,
+        via_lines,
+        record_route_lines,
         headers.get("From").unwrap_or(&empty_string),
         headers.get("To").unwrap_or(&empty_string),
         headers.get("Call-ID").unwrap_or(&empty_string),
-        cseq_full, contact_header, content_length, body
+        cseq_full,
+        contact_header,
+        content_length,
+        body
     )
 }
 
@@ -446,14 +504,18 @@ fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut via_headers = Vec::new();
     let mut record_route_headers = Vec::new();
     for line in request.lines() {
-        if line.is_empty() { break; }
+        if line.is_empty() {
+            break;
+        }
         if let Some((key, value)) = line.split_once(':') {
             let key_trimmed = key.trim();
             let value_trimmed = value.trim().to_string();
             match key_trimmed.to_lowercase().as_str() {
                 "via" | "v" => via_headers.push(value_trimmed),
                 "record-route" => record_route_headers.push(value_trimmed),
-                _ => { headers.insert(key_trimmed.to_string(), value_trimmed); }
+                _ => {
+                    headers.insert(key_trimmed.to_string(), value_trimmed);
+                }
             }
         }
     }
