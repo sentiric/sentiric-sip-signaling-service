@@ -309,17 +309,37 @@ async fn handle_bye(
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         tracing::Span::current().record("call_id", &call_id as &str);
         info!("BYE isteği alındı.");
+
+        // Önce yanıtı gönderelim ki telekom operatörü beklemesin.
+        let ok_response = create_response("200 OK", &headers, None, &config);
+        sock.send_to(ok_response.as_bytes(), addr).await?;
+        info!("BYE isteğine 200 OK yanıtı gönderildi.");
+
         let call_info = { active_calls.lock().await.remove(&call_id) };
+
         if let Some((rtp_port, trace_id)) = call_info {
             tracing::Span::current().record("trace_id", &trace_id as &str);
-            info!(port = rtp_port, "Çağrı sonlandırılıyor, RTP portu serbest bırakılacak.");
+            info!(port = rtp_port, "Çağrı sonlandırılıyor, kaynaklar serbest bırakılacak.");
+
+            // --- YARIŞ DURUMU DÜZELTMESİ ---
+            // agent-service'in son bir anons çalmasına izin vermek için kısa bir gecikme ekliyoruz.
+            // Bu, 'port not found' hatasını önleyecektir.
+            info!("Agent'a son işlemleri için 2 saniyelik lütuf süresi tanınıyor...");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            // --- DÜZELTME SONU ---
+            
             let mut media_req = TonicRequest::new(ReleasePortRequest { rtp_port });
             media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+            
             let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
             let mut media_client = MediaServiceClient::new(media_channel);
+
             if let Err(e) = media_client.release_port(media_req).await {
                 error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu.");
+            } else {
+                info!(port = rtp_port, "RTP portu başarıyla serbest bırakıldı.");
             }
+
             let event_payload = serde_json::json!({
                 "eventType": "call.ended",
                 "traceId": trace_id,
@@ -331,9 +351,6 @@ async fn handle_bye(
         } else {
             warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
         }
-        let ok_response = create_response("200 OK", &headers, None, &config);
-        sock.send_to(ok_response.as_bytes(), addr).await?;
-        info!("BYE isteğine 200 OK yanıtı gönderildi.");
     }
     Ok(())
 }
