@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
-use std::fmt; // YENİ: Manuel Debug implementasyonu için eklendi
+use std::fmt; 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -28,14 +28,10 @@ use sentiric_contracts::sentiric::{
     user::v1::{user_service_client::UserServiceClient, FindUserByContactRequest},
 };
 
-use tonic::service::interceptor; // interceptor'ı import etmeye gerek yok, Channel::builder yeterli
-
-
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
 type ActiveCalls = Arc<Mutex<HashMap<String, (u32, String)>>>; 
 
-// GÜVENLİK DÜZELTMESİ: #[derive(Debug)] kaldırıldı.
 #[derive(Clone)]
 struct AppConfig {
     sip_listen_addr: SocketAddr,
@@ -47,7 +43,6 @@ struct AppConfig {
     env: String,
 }
 
-// GÜVENLİK DÜZELTMESİ: Hassas bilgileri loglardan gizlemek için manuel Debug implementasyonu.
 impl fmt::Debug for AppConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppConfig")
@@ -56,7 +51,7 @@ impl fmt::Debug for AppConfig {
             .field("dialplan_service_url", &self.dialplan_service_url)
             .field("media_service_url", &self.media_service_url)
             .field("user_service_url", &self.user_service_url)
-            .field("rabbitmq_url", &"***REDACTED***") // Hassas bilgiyi gizle
+            .field("rabbitmq_url", &"***REDACTED***")
             .field("env", &self.env)
             .finish()
     }
@@ -168,18 +163,14 @@ async fn create_secure_grpc_channel(url: &str, server_name: &str) -> Result<Chan
         .domain_name(server_name)
         .ca_certificate(ca_cert)
         .identity(identity);
-    
-    // --- DAYANIKLILIK İYİLEŞTİRMESİ ---
+
     let endpoint = Channel::from_shared(format!("https://{}", url))?
         .tls_config(tls_config)?
         .connect_timeout(Duration::from_secs(5))
-        // YENİ: keep_alive_while_idle(true) ile bağlantının kopmasını zorlaştır.
         .keep_alive_while_idle(true)
-        // YENİ: Bağlantı koptuğunda ne kadar süre yeniden deneneceğini belirt.
         .timeout(Duration::from_secs(10));
     
     let channel = endpoint.connect().await?;
-    // --- İYİLEŞTİRME SONU ---
     Ok(channel)
 }
 
@@ -198,8 +189,6 @@ async fn handle_invite(
     };
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
     
-    // GÜÇLENDİRİLMİŞ KORUMA: Bir çağrı için zaten işlem başlatıldıysa, tekrar başlatma.
-    // .insert() metodu, eğer anahtar zaten varsa eski değeri döndürür. Bu, atomik bir "kontrol et ve ekle" işlemidir.
     let trace_id = format!("trace-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 12));
     let mut active_calls_guard = active_calls.lock().await;
     if active_calls_guard.insert(call_id.clone(), (0, trace_id.clone())).is_some() {
@@ -310,7 +299,7 @@ async fn handle_bye(
         tracing::Span::current().record("call_id", &call_id as &str);
         info!("BYE isteği alındı.");
 
-        // Önce yanıtı gönderelim ki telekom operatörü beklemesin.
+        // Önce 200 OK yanıtını göndererek telekom operatörünü bekletme.
         let ok_response = create_response("200 OK", &headers, None, &config);
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!("BYE isteğine 200 OK yanıtı gönderildi.");
@@ -320,10 +309,10 @@ async fn handle_bye(
         if let Some((rtp_port, trace_id)) = call_info {
             tracing::Span::current().record("trace_id", &trace_id as &str);
             info!(port = rtp_port, "Çağrı sonlandırılıyor, kaynaklar serbest bırakılacak.");
-
+            
             // --- YARIŞ DURUMU DÜZELTMESİ ---
-            // agent-service'in son bir anons çalmasına izin vermek için kısa bir gecikme ekliyoruz.
-            // Bu, 'port not found' hatasını önleyecektir.
+            // agent-service'in son bir anons çalmasına veya işlemini bitirmesine
+            // izin vermek için kısa bir gecikme ekliyoruz.
             info!("Agent'a son işlemleri için 2 saniyelik lütuf süresi tanınıyor...");
             tokio::time::sleep(Duration::from_secs(2)).await;
             // --- DÜZELTME SONU ---
@@ -354,6 +343,7 @@ async fn handle_bye(
     }
     Ok(())
 }
+
 
 fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
     let body = sdp.unwrap_or("");
