@@ -28,14 +28,13 @@ use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
     media::v1::{
-        media_service_client::MediaServiceClient, AllocatePortRequest, PlayAudioRequest,
-        ReleasePortRequest,
+        media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest,
     },
 };
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
-type ActiveCalls = Arc<Mutex<HashMap<String, (SocketAddr, Instant, u32)>>>; // (RemoteAddr, CreationTime, RtpPort)
+type ActiveCalls = Arc<Mutex<HashMap<String, (u32, String, Instant)>>>;
 
 #[derive(Clone)]
 struct AppConfig {
@@ -114,8 +113,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
     info!(address = %config.sip_listen_addr, "SIP Signaling başlatıldı.");
     let mut buf = [0; 65535];
-    let transactions_clone_for_cleanup = active_calls.clone();
-    tokio::spawn(cleanup_old_transactions(transactions_clone_for_cleanup));
+    let cleanup_calls_clone = active_calls.clone();
+    tokio::spawn(cleanup_old_transactions(cleanup_calls_clone));
     loop {
         let (len, addr) = sock.recv_from(&mut buf).await?;
         let sock_clone = Arc::clone(&sock);
@@ -124,7 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let request_bytes = buf[..len].to_vec();
         let active_calls_clone = Arc::clone(&active_calls);
         tokio::spawn(async move {
-            if let Err(e) = handle_sip_request(&request_bytes, sock_clone, addr, config_clone, Some(rabbit_channel_clone), active_calls_clone).await {
+            if let Err(e) = handle_sip_request(&request_bytes, sock_clone, addr, config_clone, rabbit_channel_clone, active_calls_clone).await {
                 error!(error = %e, remote_addr = %addr, "SIP isteği işlenirken akış tamamlanamadı.");
             }
         });
@@ -137,12 +136,12 @@ async fn handle_sip_request(
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     config: Arc<AppConfig>,
-    rabbit_channel: Option<Arc<LapinChannel>>,
+    rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let request_str = std::str::from_utf8(request_bytes)?;
     if request_str.starts_with("INVITE") {
-        handle_invite(request_str, sock, addr, config, rabbit_channel.unwrap(), active_calls).await
+        handle_invite(request_str, sock, addr, config, rabbit_channel, active_calls).await
     } else if request_str.starts_with("BYE") {
         handle_bye(request_str, sock, addr, config, rabbit_channel, active_calls).await
     } else if request_str.starts_with("ACK") {
@@ -202,8 +201,8 @@ async fn handle_invite(
     let dialplan_res = match dialplan_client.resolve_dialplan(dialplan_req).await {
         Ok(res) => res.into_inner(),
         Err(e) => {
-            error!(error = %e, "Dialplan çözümlenirken kritik hata. Failsafe (güvenli liman) akışı başlatılıyor.");
-            play_failsafe_announcement(call_id, trace_id, request_str, &mut headers, &sock, addr, &config, &active_calls).await?;
+            error!(error = %e, "Dialplan çözümlenirken kritik hata.");
+            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
     };
@@ -216,12 +215,13 @@ async fn handle_invite(
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
             error!(error = %e, "Medya portu alınamadı.");
-            play_failsafe_announcement(call_id, trace_id, request_str, &mut headers, &sock, addr, &config, &active_calls).await?;
+            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
     };
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
-    active_calls.lock().await.insert(call_id.clone(), (addr, Instant::now(), server_rtp_port));
+    // DÜZELTME: HashMap'e doğru tiplerde veri ekleniyor: (u32, String, Instant)
+    active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone(), Instant::now()));
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
@@ -238,58 +238,12 @@ async fn handle_invite(
     Ok(())
 }
 
-#[instrument(skip_all, fields(call_id, trace_id))]
-async fn play_failsafe_announcement(
-    call_id: String,
-    trace_id: String,
-    request_str: &str,
-    headers: &mut HashMap<String, String>,
-    sock: &Arc<UdpSocket>,
-    addr: SocketAddr,
-    config: &Arc<AppConfig>,
-    active_calls: &ActiveCalls,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
-    let mut media_client = MediaServiceClient::new(media_channel);
-    let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
-    media_req.metadata_mut().insert("x-trace-id", trace_id.clone().parse()?);
-    let server_rtp_port = match media_client.allocate_port(media_req).await {
-        Ok(res) => res.into_inner().rtp_port,
-        Err(e) => {
-            error!(error = %e, "Failsafe: Medya portu alınamadı.");
-            sock.send_to(create_response("503 Service Unavailable", headers, None, config).as_bytes(), addr).await?;
-            return Err(e.into());
-        }
-    };
-    info!(port = server_rtp_port, "Failsafe: Medya portu ayrıldı.");
-    active_calls.lock().await.insert(call_id.clone(), (addr, Instant::now(), server_rtp_port));
-    let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
-    let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
-    headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
-    sock.send_to(create_response("200 OK", headers, Some(&sdp_body), config).as_bytes(), addr).await?;
-    sleep(Duration::from_millis(500)).await;
-    let caller_rtp_addr = extract_sdp_media_info(request_str).unwrap_or_else(|| addr.to_string());
-    let mut play_req = TonicRequest::new(PlayAudioRequest {
-        rtp_target_addr: caller_rtp_addr,
-        server_rtp_port,
-        audio_uri: "file:///audio/tr/system/technical_difficulty.wav".to_string(),
-    });
-    play_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
-    info!("Failsafe: Sistem hatası anonsu çalınıyor...");
-    if let Err(e) = media_client.play_audio(play_req).await {
-         error!(error = %e, "Failsafe anonsu çalınamadı.");
-    }
-    sleep(Duration::from_secs(1)).await;
-    handle_bye(request_str, sock.clone(), addr, config.clone(), None, active_calls.clone()).await?;
-    Ok(())
-}
-
 async fn handle_bye(
     request_str: &str,
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     config: Arc<AppConfig>,
-    rabbit_channel: Option<Arc<LapinChannel>>,
+    rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if let Some(headers) = parse_complex_headers(request_str) {
@@ -300,8 +254,7 @@ async fn handle_bye(
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!("BYE isteğine 200 OK yanıtı gönderildi.");
         let call_info = { active_calls.lock().await.remove(&call_id) };
-        if let Some((_client_addr, _created_at, rtp_port)) = call_info {
-            let trace_id = format!("trace-bye-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 8));
+        if let Some((rtp_port, trace_id, _)) = call_info {
             tracing::Span::current().record("trace_id", &trace_id as &str);
             info!(port = rtp_port, "Çağrı sonlandırılıyor, kaynaklar serbest bırakılacak.");
             let mut media_req = TonicRequest::new(ReleasePortRequest { rtp_port });
@@ -313,13 +266,11 @@ async fn handle_bye(
             } else {
                 info!(port = rtp_port, "RTP portu başarıyla serbest bırakıldı.");
             }
-            if let Some(channel) = rabbit_channel {
-                let event_payload = serde_json::json!({ "eventType": "call.ended", "traceId": trace_id, "callId": call_id, "timestamp": Utc::now().to_rfc3339() });
-                let publish_result = channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
-                if let Ok(confirmation) = publish_result {
-                    if let Ok(_) = confirmation.await { info!("'call.ended' olayı başarıyla yayınlandı."); } else { error!("RabbitMQ 'call.ended' onayı alınamadı."); }
-                } else { error!("RabbitMQ'ya 'call.ended' yayınlanamadı."); }
-            }
+            let event_payload = serde_json::json!({ "eventType": "call.ended", "traceId": trace_id, "callId": call_id, "timestamp": Utc::now().to_rfc3339() });
+            let publish_result = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
+            if let Ok(confirmation) = publish_result {
+                if let Ok(_) = confirmation.await { info!("'call.ended' olayı başarıyla yayınlandı."); } else { error!("RabbitMQ 'call.ended' onayı alınamadı."); }
+            } else { error!("RabbitMQ'ya 'call.ended' yayınlanamadı."); }
         } else {
             warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
         }
@@ -331,7 +282,6 @@ fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut headers = HashMap::new();
     let mut via_headers = Vec::new();
     let mut record_route_headers = Vec::new();
-    headers.insert("original_request".to_string(), request.to_string());
     for line in request.lines() {
         if line.is_empty() { break; }
         if let Some((key, value)) = line.split_once(':') {
@@ -385,4 +335,4 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
 
 fn extract_user_from_uri(uri: &str) -> Option<String> { USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| { let original_num = user_part.as_str(); let mut num: String = original_num.chars().filter(|c| c.is_digit(10)).collect(); if num.len() == 11 && num.starts_with('0') { num = format!("90{}", &num[1..]); } else if num.len() == 10 && !num.starts_with("90") { num = format!("90{}", num); } let normalized_num = num; if original_num != normalized_num { info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi."); } normalized_num }) }
 fn extract_sdp_media_info(sip_request: &str) -> Option<String> { let mut ip_addr: Option<&str> = None; let mut port: Option<&str> = None; if let Some(sdp_part) = sip_request.split("\r\n\r\n").nth(1) { for line in sdp_part.lines() { if line.starts_with("c=IN IP4 ") { ip_addr = line.split_whitespace().nth(2); } if line.starts_with("m=audio ") { port = line.split_whitespace().nth(1); } } } if let (Some(ip), Some(p)) = (ip_addr, port) { Some(format!("{}:{}", ip, p)) } else { None } }
-async fn cleanup_old_transactions(transactions: ActiveCalls) { let mut interval = tokio::time::interval(Duration::from_secs(60)); loop { interval.tick().await; let mut guard = transactions.lock().await; let before_count = guard.len(); guard.retain(|_call_id, (_addr, created_at, _rtp_port)| created_at.elapsed() < Duration::from_secs(120)); let after_count = guard.len(); if before_count > after_count { info!(cleaned_count = before_count - after_count, remaining_count = after_count, "Temizlik görevi: Eski işlemler temizlendi."); } } }
+async fn cleanup_old_transactions(transactions: ActiveCalls) { let mut interval = tokio::time::interval(Duration::from_secs(60)); loop { interval.tick().await; let mut guard = transactions.lock().await; let before_count = guard.len(); guard.retain(|_call_id, (_, _, created_at)| created_at.elapsed() < Duration::from_secs(120)); let after_count = guard.len(); if before_count > after_count { info!(cleaned_count = before_count - after_count, remaining_count = after_count, "Temizlik görevi: Eski işlemler temizlendi."); } } }
