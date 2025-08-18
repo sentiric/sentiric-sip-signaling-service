@@ -2348,8 +2348,8 @@ dependencies = [
 
 [[package]]
 name = "sentiric-contracts"
-version = "1.7.5"
-source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.7.5#c882a1814bcb103a8751ca341ea6001b5a2708de"
+version = "1.7.8"
+source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.7.8#f9f47511e24b1cd10df23ec67bbcd48fc3b53959"
 dependencies = [
  "prost",
  "serde",
