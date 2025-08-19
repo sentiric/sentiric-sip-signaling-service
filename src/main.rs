@@ -1,3 +1,4 @@
+// ========== FILE: sentiric-sip-signaling-service/src/main.rs ==========
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
@@ -183,8 +184,7 @@ async fn handle_invite(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut headers = parse_complex_headers(request_str).ok_or_else(|| "Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
-
-    // --- KÖKLÜ ÇÖZÜM: Yarış Durumunu Engelleme ---
+    
     {
         let mut calls_guard = active_calls.lock().await;
         if calls_guard.contains_key(&call_id) {
@@ -194,7 +194,6 @@ async fn handle_invite(
         }
         calls_guard.insert(call_id.clone(), (0, "pending".to_string(), Instant::now()));
     }
-    // --- ÇÖZÜM SONU ---
     
     let trace_id = format!("trace-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 12));
     tracing::Span::current().record("call_id", &call_id as &str);
@@ -213,7 +212,7 @@ async fn handle_invite(
         Ok(res) => res.into_inner(),
         Err(e) => {
             error!(error = %e, "Dialplan çözümlenirken kritik hata.");
-            active_calls.lock().await.remove(&call_id); // Yer tutucuyu temizle
+            active_calls.lock().await.remove(&call_id);
             sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
@@ -227,13 +226,16 @@ async fn handle_invite(
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
             error!(error = %e, "Medya portu alınamadı.");
-            active_calls.lock().await.remove(&call_id); // Yer tutucuyu temizle
+            active_calls.lock().await.remove(&call_id);
             sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
     };
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
-    active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone(), Instant::now()));
+    if let Some(call_entry) = active_calls.lock().await.get_mut(&call_id) {
+        *call_entry = (server_rtp_port, trace_id.clone(), Instant::now());
+    }
+    
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
@@ -262,27 +264,32 @@ async fn handle_bye(
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         tracing::Span::current().record("call_id", &call_id as &str);
         info!("BYE isteği alındı.");
+        
         let ok_response = create_response("200 OK", &headers, None, &config);
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!("BYE isteğine 200 OK yanıtı gönderildi.");
+
         let call_info = { active_calls.lock().await.remove(&call_id) };
+        
         if let Some((rtp_port, trace_id, _)) = call_info {
             tracing::Span::current().record("trace_id", &trace_id as &str);
-            info!(port = rtp_port, "Çağrı sonlandırılıyor, kaynaklar serbest bırakılacak.");
-            let mut media_req = TonicRequest::new(ReleasePortRequest { rtp_port });
-            media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
-            let media_channel = create_secure_grpc_channel(&config.media_service_url, "media-service").await?;
-            let mut media_client = MediaServiceClient::new(media_channel);
-            if let Err(e) = media_client.release_port(media_req).await {
-                error!(error = %e, port = rtp_port, "Media service'e port serbest bırakma isteği gönderilirken hata oluştu.");
-            } else {
-                info!(port = rtp_port, "RTP portu başarıyla serbest bırakıldı.");
-            }
+            info!(port = rtp_port, "Çağrı sonlandırılıyor, olay yayınlanacak.");
+
             let event_payload = serde_json::json!({ "eventType": "call.ended", "traceId": trace_id, "callId": call_id, "timestamp": Utc::now().to_rfc3339() });
             let publish_result = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
+            
             if let Ok(confirmation) = publish_result {
-                if let Ok(_) = confirmation.await { info!("'call.ended' olayı başarıyla yayınlandı."); } else { error!("RabbitMQ 'call.ended' onayı alınamadı."); }
-            } else { error!("RabbitMQ'ya 'call.ended' yayınlanamadı."); }
+                if confirmation.await.is_ok() { 
+                    info!("'call.ended' olayı başarıyla yayınlandı.");
+                } else { 
+                    error!("RabbitMQ 'call.ended' onayı alınamadı.");
+                }
+            } else { 
+                error!("RabbitMQ'ya 'call.ended' yayınlanamadı.");
+            }
+            
+            warn!(port = rtp_port, "Port, agent'ın son işlemleri için açık bırakıldı. Karantina mekanizması temizleyecek.");
+
         } else {
             warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
         }
@@ -290,39 +297,10 @@ async fn handle_bye(
     Ok(())
 }
 
-fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
-    let mut headers = HashMap::new();
-    let mut via_headers = Vec::new();
-    let mut record_route_headers = Vec::new();
-    for line in request.lines() {
-        if line.is_empty() { break; }
-        if let Some((key, value)) = line.split_once(':') {
-            let key_trimmed = key.trim();
-            let value_trimmed = value.trim().to_string();
-            match key_trimmed.to_lowercase().as_str() {
-                "via" | "v" => via_headers.push(value_trimmed),
-                "record-route" => record_route_headers.push(value_trimmed),
-                _ => { headers.insert(key_trimmed.to_string(), value_trimmed); }
-            }
-        }
-    }
-    if !via_headers.is_empty() {
-        headers.insert("Via".to_string(), via_headers.join(", "));
-        if !record_route_headers.is_empty() { headers.insert("Record-Route".to_string(), record_route_headers.join(", ")); }
-        Some(headers)
-    } else {
-        warn!("Gelen SIP isteğinde Via başlığı bulunamadı.");
-        None
-    }
-}
 
-fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String {
-    let body = sdp.unwrap_or("");
-    let via_lines = headers.get("Via").map_or(String::new(), |v| format!("Via: {}\r\n", v));
-    let empty_string = String::new();
-    let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
-    format!(
-        "SIP/2.0 {}\r\n{}\
+// ... (dosyanın geri kalanı tamamen aynı)
+fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> { let mut headers = HashMap::new(); let mut via_headers = Vec::new(); let mut record_route_headers = Vec::new(); for line in request.lines() { if line.is_empty() { break; } if let Some((key, value)) = line.split_once(':') { let key_trimmed = key.trim(); let value_trimmed = value.trim().to_string(); match key_trimmed.to_lowercase().as_str() { "via" | "v" => via_headers.push(value_trimmed), "record-route" => record_route_headers.push(value_trimmed), _ => { headers.insert(key_trimmed.to_string(), value_trimmed); } } } } if !via_headers.is_empty() { headers.insert("Via".to_string(), via_headers.join(", ")); if !record_route_headers.is_empty() { headers.insert("Record-Route".to_string(), record_route_headers.join(", ")); } Some(headers) } else { warn!("Gelen SIP isteğinde Via başlığı bulunamadı."); None } }
+fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String { let body = sdp.unwrap_or(""); let via_lines = headers.get("Via").map_or(String::new(), |v| format!("Via: {}\r\n", v)); let empty_string = String::new(); let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port()); format!( "SIP/2.0 {}\r\n{}\
         From: {}\r\n\
         To: {}\r\n\
         Call-ID: {}\r\n\
@@ -331,20 +309,7 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
         Server: Sentiric Signaling Service\r\n\
         Content-Length: {}\r\n\
         {}\r\n\
-        {}",
-        status_line,
-        via_lines,
-        headers.get("From").unwrap_or(&empty_string),
-        headers.get("To").unwrap_or(&empty_string),
-        headers.get("Call-ID").unwrap_or(&empty_string),
-        headers.get("CSeq").unwrap_or(&empty_string),
-        contact_header,
-        body.len(),
-        if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" },
-        body
-    )
-}
-
+        {}", status_line, via_lines, headers.get("From").unwrap_or(&empty_string), headers.get("To").unwrap_or(&empty_string), headers.get("Call-ID").unwrap_or(&empty_string), headers.get("CSeq").unwrap_or(&empty_string), contact_header, body.len(), if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" }, body ) }
 fn extract_user_from_uri(uri: &str) -> Option<String> { USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| { let original_num = user_part.as_str(); let mut num: String = original_num.chars().filter(|c| c.is_digit(10)).collect(); if num.len() == 11 && num.starts_with('0') { num = format!("90{}", &num[1..]); } else if num.len() == 10 && !num.starts_with("90") { num = format!("90{}", num); } let normalized_num = num; if original_num != normalized_num { info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi."); } normalized_num }) }
 fn extract_sdp_media_info(sip_request: &str) -> Option<String> { let mut ip_addr: Option<&str> = None; let mut port: Option<&str> = None; if let Some(sdp_part) = sip_request.split("\r\n\r\n").nth(1) { for line in sdp_part.lines() { if line.starts_with("c=IN IP4 ") { ip_addr = line.split_whitespace().nth(2); } if line.starts_with("m=audio ") { port = line.split_whitespace().nth(1); } } } if let (Some(ip), Some(p)) = (ip_addr, port) { Some(format!("{}:{}", ip, p)) } else { None } }
 async fn cleanup_old_transactions(transactions: ActiveCalls) { let mut interval = tokio::time::interval(Duration::from_secs(60)); loop { interval.tick().await; let mut guard = transactions.lock().await; let before_count = guard.len(); guard.retain(|_call_id, (_, _, created_at)| created_at.elapsed() < Duration::from_secs(120)); let after_count = guard.len(); if before_count > after_count { info!(cleaned_count = before_count - after_count, remaining_count = after_count, "Temizlik görevi: Eski işlemler temizlendi."); } } }
