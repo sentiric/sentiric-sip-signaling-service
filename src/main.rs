@@ -186,7 +186,7 @@ async fn handle_invite(
     let mut headers = parse_complex_headers(request_str).ok_or_else(|| "Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
 
-    // --- YENİ KONTROL ---
+    // --- YENİ KONTROL BLOĞU ---
     // Eğer bu Call-ID ile zaten aktif bir çağrı varsa, bu yinelenen bir INVITE'dır.
     // Sadece "100 Trying" gönder ve işlemi sonlandır.
     if active_calls.lock().await.contains_key(&call_id) {
