@@ -186,15 +186,18 @@ async fn handle_invite(
     let mut headers = parse_complex_headers(request_str).ok_or_else(|| "Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
 
-    // --- YENİ KONTROL BLOĞU ---
-    // Eğer bu Call-ID ile zaten aktif bir çağrı varsa, bu yinelenen bir INVITE'dır.
-    // Sadece "100 Trying" gönder ve işlemi sonlandır.
-    if active_calls.lock().await.contains_key(&call_id) {
-        warn!(%call_id, "Yinelenen INVITE isteği alındı ve görmezden gelindi.");
-        // İstemciyi sessiz bırakmamak için tekrar Trying gönderebiliriz.
-        sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
-        return Ok(());
-    }
+    // --- YENİ VE DAHA GÜÇLÜ KONTROL ---
+    { // Mutex kilidinin kapsamını daraltmak için yeni bir blok açıyoruz
+        let mut calls_guard = active_calls.lock().await;
+        if calls_guard.contains_key(&call_id) {
+            warn!(%call_id, "Yinelenen INVITE isteği alındı (zaten işleniyor), görmezden gelindi.");
+            sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
+            return Ok(()); // Fonksiyondan hemen çık
+        }
+        // Kilit: Henüz port bilgimiz olmasa da, çağrıyı işleme aldığımızı belirtmek için bir yer tutucu ekliyoruz.
+        // (0, "pending".to_string(), Instant::now()) -> (port, trace_id, zaman)
+        calls_guard.insert(call_id.clone(), (0, String::new(), Instant::now()));
+    } // Mutex kilidi burada serbest bırakılır
     // --- KONTROL SONU ---
 
     let trace_id = format!("trace-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 12));
@@ -223,6 +226,8 @@ async fn handle_invite(
     let mut media_client = MediaServiceClient::new(media_channel);
     let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
     media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+
+    // Medya portunu aldıktan sonra haritadaki kaydı güncelle
     let server_rtp_port = match media_client.allocate_port(media_req).await {
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
@@ -232,7 +237,10 @@ async fn handle_invite(
         }
     };
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
+
+    // Yer tutucuyu gerçek verilerle güncelle
     active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone(), Instant::now()));
+
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
