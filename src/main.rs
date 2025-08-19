@@ -34,6 +34,9 @@ use sentiric_contracts::sentiric::{
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
+
+// DÜZELTME: ActiveCalls yapısını güncelliyoruz.
+// Artık (rtp_port, trace_id, start_time) tutacak.
 type ActiveCalls = Arc<Mutex<HashMap<String, (u32, String, Instant)>>>;
 
 #[derive(Clone)]
@@ -182,13 +185,22 @@ async fn handle_invite(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut headers = parse_complex_headers(request_str).ok_or_else(|| "Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
+
+    // --- YENİ KONTROL ---
+    // Eğer bu Call-ID ile zaten aktif bir çağrı varsa, bu yinelenen bir INVITE'dır.
+    // Sadece "100 Trying" gönder ve işlemi sonlandır.
+    if active_calls.lock().await.contains_key(&call_id) {
+        warn!(%call_id, "Yinelenen INVITE isteği alındı ve görmezden gelindi.");
+        // İstemciyi sessiz bırakmamak için tekrar Trying gönderebiliriz.
+        sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
+        return Ok(());
+    }
+    // --- KONTROL SONU ---
+
     let trace_id = format!("trace-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 12));
     tracing::Span::current().record("call_id", &call_id as &str);
     tracing::Span::current().record("trace_id", &trace_id as &str);
-    if active_calls.lock().await.contains_key(&call_id) {
-        warn!("Yinelenen INVITE isteği alındı ve atlandı.");
-        return Ok(());
-    }
+    
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     let from_uri = headers.get("From").cloned().unwrap_or_default();
     let to_uri = headers.get("To").cloned().unwrap_or_default();
@@ -220,7 +232,6 @@ async fn handle_invite(
         }
     };
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
-    // DÜZELTME: HashMap'e doğru tiplerde veri ekleniyor: (u32, String, Instant)
     active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone(), Instant::now()));
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
