@@ -35,8 +35,6 @@ use sentiric_contracts::sentiric::{
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
 
-// DÜZELTME: ActiveCalls yapısını güncelliyoruz.
-// Artık (rtp_port, trace_id, start_time) tutacak.
 type ActiveCalls = Arc<Mutex<HashMap<String, (u32, String, Instant)>>>;
 
 #[derive(Clone)]
@@ -186,24 +184,22 @@ async fn handle_invite(
     let mut headers = parse_complex_headers(request_str).ok_or_else(|| "Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
 
-    // --- YENİ VE DAHA GÜÇLÜ KONTROL ---
-    { // Mutex kilidinin kapsamını daraltmak için yeni bir blok açıyoruz
+    // --- KÖKLÜ ÇÖZÜM: Yarış Durumunu Engelleme ---
+    {
         let mut calls_guard = active_calls.lock().await;
         if calls_guard.contains_key(&call_id) {
             warn!(%call_id, "Yinelenen INVITE isteği alındı (zaten işleniyor), görmezden gelindi.");
-            sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
-            return Ok(()); // Fonksiyondan hemen çık
+            let _ = sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await;
+            return Ok(());
         }
-        // Kilit: Henüz port bilgimiz olmasa da, çağrıyı işleme aldığımızı belirtmek için bir yer tutucu ekliyoruz.
-        // (0, "pending".to_string(), Instant::now()) -> (port, trace_id, zaman)
-        calls_guard.insert(call_id.clone(), (0, String::new(), Instant::now()));
-    } // Mutex kilidi burada serbest bırakılır
-    // --- KONTROL SONU ---
-
+        calls_guard.insert(call_id.clone(), (0, "pending".to_string(), Instant::now()));
+    }
+    // --- ÇÖZÜM SONU ---
+    
     let trace_id = format!("trace-{}", Alphanumeric.sample_string(&mut rand::thread_rng(), 12));
     tracing::Span::current().record("call_id", &call_id as &str);
     tracing::Span::current().record("trace_id", &trace_id as &str);
-    
+
     sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await?;
     let from_uri = headers.get("From").cloned().unwrap_or_default();
     let to_uri = headers.get("To").cloned().unwrap_or_default();
@@ -217,6 +213,7 @@ async fn handle_invite(
         Ok(res) => res.into_inner(),
         Err(e) => {
             error!(error = %e, "Dialplan çözümlenirken kritik hata.");
+            active_calls.lock().await.remove(&call_id); // Yer tutucuyu temizle
             sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
@@ -226,21 +223,17 @@ async fn handle_invite(
     let mut media_client = MediaServiceClient::new(media_channel);
     let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
     media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
-
-    // Medya portunu aldıktan sonra haritadaki kaydı güncelle
     let server_rtp_port = match media_client.allocate_port(media_req).await {
         Ok(res) => res.into_inner().rtp_port,
         Err(e) => {
             error!(error = %e, "Medya portu alınamadı.");
+            active_calls.lock().await.remove(&call_id); // Yer tutucuyu temizle
             sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
             return Err(e.into());
         }
     };
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
-
-    // Yer tutucuyu gerçek verilerle güncelle
     active_calls.lock().await.insert(call_id.clone(), (server_rtp_port, trace_id.clone(), Instant::now()));
-
     let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, server_rtp_port);
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
