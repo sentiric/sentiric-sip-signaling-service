@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y netcat-openbsd ca-certificates && rm -r
 
 ARG SERVICE_NAME
 WORKDIR /app
-COPY --from=builder /app/target/release/${SERVICE_NAME} .
+COPY --from=builder /app/target/release/sentiric-sip-signaling-service .
 USER 10001
 
 ENTRYPOINT ["./sentiric-sip-signaling-service"]
