@@ -10,13 +10,8 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Bağımlılıkları önbelleğe al
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release
+COPY . .
 
-# Kaynak kodunu kopyala ve asıl derlemeyi yap
-COPY src ./src
 RUN cargo build --release
 
 # --- AŞAMA 2: Çalıştırma (Runtime) ---
@@ -24,9 +19,8 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y netcat-openbsd ca-certificates && rm -rf /var/lib/apt/lists/*
 
-ARG SERVICE_NAME
 WORKDIR /app
+
 COPY --from=builder /app/target/release/sentiric-sip-signaling-service .
-USER 10001
 
 ENTRYPOINT ["./sentiric-sip-signaling-service"]
