@@ -241,7 +241,12 @@ async fn handle_invite(
                 
                 // Dinamik olarak `caller_rtp_addr`'ı SDP'den alıyoruz.
                 let caller_rtp_addr = extract_sdp_media_info(request_str).unwrap_or_else(|| addr.to_string());
-                let audio_uri = "file:///app/assets/audio/tr/system/technical_difficulty.wav".to_string();
+                
+                // --- ACİL DURUM AKIŞI ---
+                // ...
+                // 4. ANONS ÇALMA KOMUTUNU GÖNDER
+                // Artık tam yolu belirtmemize gerek yok. media-service bunu halledecek.
+                let audio_uri = "file://audio/tr/system/technical_difficulty.wav".to_string();
 
                 let play_req = sentiric_contracts::sentiric::media::v1::PlayAudioRequest {
                     rtp_target_addr: caller_rtp_addr,
