@@ -9,10 +9,9 @@ volumes:
   rabbitmq_data:
 
 services:
-
   # --- VERİ KATMANI ---
   postgres:
-    image: postgres:16-alpine
+    build: { context: ../sentiric-postgres }
     env_file: ["${ENV_FILE_PATH}"]
     ports: ["5432:5432"]
     volumes:
@@ -27,7 +26,7 @@ services:
       retries: 5
 
   rabbitmq:
-    image: rabbitmq:4.1.0-management-alpine
+    build: { context: ../sentiric-rabbitmq }
     env_file: ["${ENV_FILE_PATH}"]
     ports: ["15672:15672", "5672:5672"]
     volumes: [rabbitmq_data:/var/lib/rabbitmq/]
