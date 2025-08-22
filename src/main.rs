@@ -219,8 +219,9 @@ async fn handle_invite(
     };
 
     if let Err(e) = dialplan_result {
+        // --- ACİL DURUM AKIŞI ---
         error!(error = %e, "Dialplan'den karar alınamadı. Acil Durum Anonsu (Plan C) tetikleniyor.");
-        
+
         let event_payload = serde_json::json!({ "eventType": "call.lost", "traceId": trace_id, "callId": call_id, "from": from_uri, "to": to_uri, "reason": "dialplan_unavailable", "timestamp": Utc::now().to_rfc3339() });
         let _ = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
         
@@ -240,8 +241,9 @@ async fn handle_invite(
                 
                 // Dinamik olarak `caller_rtp_addr`'ı SDP'den alıyoruz.
                 let caller_rtp_addr = extract_sdp_media_info(request_str).unwrap_or_else(|| addr.to_string());
-                let audio_uri = "file://assets/audio/tr/system/technical_difficulty.wav".to_string();
-                let play_req = PlayAudioRequest {
+                let audio_uri = "file:///app/assets/audio/tr/system/technical_difficulty.wav".to_string();
+
+                let play_req = sentiric_contracts::sentiric::media::v1::PlayAudioRequest {
                     rtp_target_addr: caller_rtp_addr,
                     server_rtp_port: rtp_port,
                     audio_uri,
