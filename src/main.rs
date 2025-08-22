@@ -15,7 +15,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Identity},
-    Request as TonicRequest,
+    Request as TonicRequest, Status,
 };
 use tracing::{error, info, instrument, warn};
 use tracing_subscriber::EnvFilter;
@@ -28,8 +28,8 @@ use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
-    media::v1::{
-        media_service_client::MediaServiceClient, AllocatePortRequest, ReleasePortRequest,
+    media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, PlayAudioRequest, 
+        // ReleasePortRequest
     },
 };
 
@@ -199,8 +199,7 @@ async fn handle_invite(
     {
         let mut calls_guard = active_calls.lock().await;
         if calls_guard.contains_key(&call_id) {
-            warn!("Yinelenen INVITE isteği alındı (zaten işleniyor), görmezden gelindi.");
-            let _ = sock.send_to(create_response("100 Trying", &headers, None, &config).as_bytes(), addr).await;
+            warn!("Yinelenen INVITE isteği alındı, görmezden gelindi.");
             return Ok(());
         }
         calls_guard.insert(call_id.clone(), (0, "pending".to_string(), Instant::now()));
@@ -214,53 +213,60 @@ async fn handle_invite(
     });
     dialplan_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
     
-    let dialplan_res = match create_secure_grpc_channel(&config.dialplan_service_url, "dialplan-service").await {
-        Ok(channel) => {
-            let mut dialplan_client = DialplanServiceClient::new(channel);
-            match dialplan_client.resolve_dialplan(dialplan_req).await {
-                Ok(res) => {
-                    info!(dialplan_id = %res.get_ref().dialplan_id, "Dialplan başarıyla çözümlendi.");
-                    res.into_inner()
-                },
-                Err(e) => {
-                    error!(error = %e, "Dialplan servisi hata döndürdü, Failsafe Anonsu tetikleniyor.");
-                    sentiric_contracts::sentiric::dialplan::v1::ResolveDialplanResponse {
-                        dialplan_id: "DP_SYSTEM_FAILSAFE".to_string(),
-                        tenant_id: "system".to_string(),
-                        action: Some(sentiric_contracts::sentiric::dialplan::v1::DialplanAction {
-                            action: "PLAY_ANNOUNCEMENT".to_string(),
-                            action_data: Some(sentiric_contracts::sentiric::dialplan::v1::ActionData {
-                                data: [("announcement_id".to_string(), "ANNOUNCE_SYSTEM_ERROR".to_string())].iter().cloned().collect(),
-                            }),
-                        }),
-                        inbound_route: Some(sentiric_contracts::sentiric::dialplan::v1::InboundRoute {
-                            default_language_code: "tr".to_string(),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }
-                }
-            }
-        },
-        Err(e) => {
-            error!(error = %e, "Dialplan servisine bağlanılamadı, Failsafe Anonsu tetikleniyor.");
-            sentiric_contracts::sentiric::dialplan::v1::ResolveDialplanResponse {
-                dialplan_id: "DP_SYSTEM_FAILSAFE".to_string(),
-                tenant_id: "system".to_string(),
-                action: Some(sentiric_contracts::sentiric::dialplan::v1::DialplanAction {
-                    action: "PLAY_ANNOUNCEMENT".to_string(),
-                    action_data: Some(sentiric_contracts::sentiric::dialplan::v1::ActionData {
-                        data: [("announcement_id".to_string(), "ANNOUNCE_SYSTEM_ERROR".to_string())].iter().cloned().collect(),
-                    }),
-                }),
-                inbound_route: Some(sentiric_contracts::sentiric::dialplan::v1::InboundRoute {
-                    default_language_code: "tr".to_string(),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }
-        }
+    let dialplan_result = match create_secure_grpc_channel(&config.dialplan_service_url, "dialplan-service").await {
+        Ok(channel) => DialplanServiceClient::new(channel).resolve_dialplan(dialplan_req).await,
+        Err(e) => Err(Status::unavailable(format!("Dialplan servisine bağlanılamadı: {}", e))),
     };
+
+    if let Err(e) = dialplan_result {
+        error!(error = %e, "Dialplan'den karar alınamadı. Acil Durum Anonsu (Plan C) tetikleniyor.");
+        
+        let event_payload = serde_json::json!({ "eventType": "call.lost", "traceId": trace_id, "callId": call_id, "from": from_uri, "to": to_uri, "reason": "dialplan_unavailable", "timestamp": Utc::now().to_rfc3339() });
+        let _ = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await;
+        
+        let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
+        media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+
+        if let Ok(media_channel) = create_secure_grpc_channel(&config.media_service_url, "media-service").await {
+            let mut media_client = MediaServiceClient::new(media_channel);
+            if let Ok(port_res) = media_client.allocate_port(media_req).await {
+                let rtp_port = port_res.into_inner().rtp_port;
+                info!(port = rtp_port, "Acil durum anonsu için port alındı.");
+
+                let sdp_body = format!("v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n", rand::thread_rng().gen::<u32>(), config.sip_public_ip, rtp_port);
+                let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
+                headers.entry("To".to_string()).and_modify(|v| *v = format!("{}{}", v, to_tag));
+                sock.send_to(create_response("200 OK", &headers, Some(&sdp_body), &config).as_bytes(), addr).await?;
+                
+                // Dinamik olarak `caller_rtp_addr`'ı SDP'den alıyoruz.
+                let caller_rtp_addr = extract_sdp_media_info(request_str).unwrap_or_else(|| addr.to_string());
+                let audio_uri = "file:///assets/audio/tr/system/technical_difficulty.wav".to_string();
+                let play_req = PlayAudioRequest {
+                    rtp_target_addr: caller_rtp_addr,
+                    server_rtp_port: rtp_port,
+                    audio_uri,
+                };
+                let mut tonic_play_req = TonicRequest::new(play_req);
+                tonic_play_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
+                
+                info!("Acil durum anonsu çalınıyor...");
+                let _ = media_client.play_audio(tonic_play_req).await;
+
+                sleep(Duration::from_secs(5)).await;
+                // `BYE` göndermek yerine çağrıyı açık bırakabiliriz, operatör kapatır. Veya kapatabiliriz.
+                info!("Acil durum çağrısı anons sonrası beklemeye alındı.");
+                // active_calls.lock().await.remove(&call_id);
+            } else {
+                 sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
+            }
+        } else {
+            sock.send_to(create_response("503 Service Unavailable", &headers, None, &config).as_bytes(), addr).await?;
+        }
+        
+        return Ok(());
+    }
+    
+    let dialplan_res = dialplan_result.unwrap().into_inner();
     
     let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: call_id.clone() });
     media_req.metadata_mut().insert("x-trace-id", trace_id.parse()?);
@@ -316,7 +322,6 @@ async fn handle_invite(
     Ok(())
 }
 
-
 async fn handle_bye(
     request_str: &str,
     sock: Arc<UdpSocket>,
@@ -353,9 +358,6 @@ async fn handle_bye(
                 error!("RabbitMQ'ya 'call.ended' yayınlanamadı.");
             }
             
-            // Portu hemen serbest bırakmak yerine karantinaya gönderiyoruz.
-			// Bu, agent-service'in son bir anons çalması gibi durumlara zaman tanır.
-			// Karantina mekanizması portu daha sonra temizleyecektir.
             warn!(port = rtp_port, "Port, agent'ın son işlemleri için açık bırakıldı. Karantina mekanizması temizleyecek.");
 
         } else {
@@ -365,7 +367,6 @@ async fn handle_bye(
     Ok(())
 }
 
-// ... (dosyanın geri kalan yardımcı fonksiyonları aynı kalacak)
 fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> { let mut headers = HashMap::new(); let mut via_headers = Vec::new(); let mut record_route_headers = Vec::new(); for line in request.lines() { if line.is_empty() { break; } if let Some((key, value)) = line.split_once(':') { let key_trimmed = key.trim(); let value_trimmed = value.trim().to_string(); match key_trimmed.to_lowercase().as_str() { "via" | "v" => via_headers.push(value_trimmed), "record-route" => record_route_headers.push(value_trimmed), _ => { headers.insert(key_trimmed.to_string(), value_trimmed); } } } } if !via_headers.is_empty() { headers.insert("Via".to_string(), via_headers.join(", ")); if !record_route_headers.is_empty() { headers.insert("Record-Route".to_string(), record_route_headers.join(", ")); } Some(headers) } else { warn!("Gelen SIP isteğinde Via başlığı bulunamadı."); None } }
 fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig) -> String { let body = sdp.unwrap_or(""); let via_lines = headers.get("Via").map_or(String::new(), |v| format!("Via: {}\r\n", v)); let empty_string = String::new(); let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port()); format!( "SIP/2.0 {}\r\n{}\
         From: {}\r\n\
