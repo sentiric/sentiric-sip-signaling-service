@@ -1,39 +1,52 @@
-# 🚦 Sentiric SIP Signaling Service - Görev Listesi
+# 🚦 Sentiric SIP Signaling Service - Geliştirme Yol Haritası (v4.0)
 
-Bu belge, servisin geliştirme önceliklerini ve gelecekte eklenecek SIP özelliklerini takip eder.
+Bu belge, servisin geliştirme görevlerini projenin genel fazlarına uygun olarak listeler.
 
 ---
 
-### Faz 1: Çekirdek Çağrı Kurulum ve Sonlandırma (Mevcut Durum)
+### **FAZ 1: Stabilizasyon ve Çekirdek Çağrı Akışı**
 
-Bu fazın amacı, platformun temel gelen çağrı (`INVITE`) ve sonlandırma (`BYE`) akışını uçtan uca, sağlam bir şekilde yönetmektir.
+**Amaç:** Canlı çağrı akışının çalışmasını engelleyen temel sorunları gidermek ve platformun temel çağrı kurulum/sonlandırma yeteneklerini sağlamlaştırmak.
 
--   [x] **`INVITE` İşleme:** Gelen SIP `INVITE` isteklerini alma ve `100 Trying`, `180 Ringing`, `200 OK` yanıtlarını üretme.
--   [x] **gRPC Orkestrasyonu:** `user`, `dialplan` ve `media` servislerine sıralı ve güvenli (mTLS) gRPC çağrıları yapma.
--   [x] **Asenkron Olay Yayınlama:** `call.started` ve `call.ended` olaylarını RabbitMQ'ya gönderme.
--   [x] **`BYE` İşleme:** Aktif bir çağrıyı sonlandırma, ilgili medya portunu serbest bıraktırma ve `call.ended` olayını yayınlama.
--   [x] **Aktif Çağrı Takibi:** Devam eden çağrıları ve ilgili port/trace ID'lerini hafızada tutma.
+-   [x] **Görev ID: SIG-000 - Çekirdek `INVITE`/`BYE` Akışı**
+    -   **Durum:** ✅ **Tamamlandı**
+    -   **Kabul Kriterleri:** Servis, gelen `INVITE` ve `BYE` isteklerini başarıyla işler, ilgili `200 OK` yanıtlarını üretir.
 
--   [ ] **Görev ID: SIG-004 - Fazla Konuşkan Loglamayı Düzeltme**
+-   [x] **Görev ID: SIG-000B - Senkron Orkestrasyon**
+    -   **Durum:** ✅ **Tamamlandı**
+    -   **Kabul Kriterleri:** `user`, `dialplan` ve `media` servislerine sıralı ve güvenli (mTLS) gRPC çağrıları yaparak çağrı kurulumu için gerekli bilgileri toplar.
+
+-   [x] **Görev ID: SIG-000C - Asenkron Olay Yayınlama**
+    -   **Durum:** ✅ **Tamamlandı**
+    -   **Kabul Kriterleri:** `call.started` ve `call.ended` olaylarını, `ResolveDialplanResponse`'tan gelen tüm zenginleştirilmiş verilerle birlikte RabbitMQ'ya başarılı bir şekilde yayınlar.
+
+-   [ ] **Görev ID: SIG-004 - Fazla Konuşkan Loglamayı Düzeltme (KRİTİK & ACİL)**
     -   **Açıklama:** `src/main.rs` dosyasındaki `tracing` yapılandırmasını, `OBSERVABILITY_STANDARD.md`'ye uygun hale getirerek `INFO` seviyesindeki gereksiz `enter/exit` loglarını kaldır.
     -   **Kabul Kriterleri:**
-        -   [ ] Üretim/Free profilinde `INFO` seviyesinde sadece önemli olaylar loglanmalıdır.
-        -   [ ] Detaylı span logları sadece `DEBUG` seviyesinde görünür olmalıdır.
-        
+        -   [ ] `ENV=production` veya `free` modunda, `RUST_LOG=info` ayarıyla çalışırken, loglarda artık fonksiyon giriş/çıkışlarını gösteren span olayları **görünmemelidir**.
+        -   [ ] `ENV=development` modunda, `RUST_LOG=debug` ayarıyla çalışırken, bu detaylı span olayları hata ayıklama için **görünür olmalıdır**.
+
 ---
 
-### Faz 2: Gelişmiş Çağrı Kontrolü ve Kullanıcı Kaydı (Sıradaki Öncelik)
+### **FAZ 2: Gelişmiş SIP Yetenekleri**
 
-Bu faz, platformu statik bir çağrı alıcısından, kullanıcıların bağlanabildiği dinamik bir SIP sunucusuna dönüştürecektir.
+**Amaç:** Platformu, standart SIP istemcilerinin bağlanabildiği ve daha karmaşık çağrı senaryolarını yönetebilen tam teşekküllü bir SIP sunucusuna dönüştürmek.
 
 -   [ ] **Görev ID: SIG-001 - `REGISTER` Metodu Desteği**
     -   **Açıklama:** SIP istemcilerinin (softphone, mobil uygulama) platforma kayıt olmasını (`REGISTER`) ve `user-service` üzerinden kimlik doğrulaması yapmasını sağla. Bu, platformdan dışarıya doğru arama yapmanın ilk adımıdır.
-    -   **Durum:** ⬜ Planlandı.
+    -   **Kabul Kriterleri:**
+        -   [ ] Gelen `REGISTER` isteği ayrıştırılmalı (parse edilmeli).
+        -   [ ] İsteğin `Authorization` başlığındaki kimlik bilgileri `user-service`'e danışılarak doğrulanmalı.
+        -   [ ] Başarılı kayıt durumunda, kullanıcının `Contact` adresi belirli bir süre (`expires`) için hafızada (örn: Redis) tutulmalı.
+        -   [ ] İstemciye `200 OK` veya `401 Unauthorized` gibi uygun bir yanıt dönülmeli.
 
 -   [ ] **Görev ID: SIG-002 - `CANCEL` Metodu Desteği**
-    -   **Açıklama:** Bir `INVITE` isteği gönderildikten sonra, ancak `200 OK` yanıtı alınmadan önce çağrının iptal edilmesini sağlayan `CANCEL` isteğini işle. İlgili medya portunu serbest bırak.
-    -   **Durum:** ⬜ Planlandı.
+    -   **Açıklama:** Bir `INVITE` isteği gönderildikten sonra, ancak `200 OK` yanıtı alınmadan önce çağrının iptal edilmesini sağlayan `CANCEL` isteğini işle.
+    -   **Kabul Kriterleri:**
+        -   [ ] Gelen `CANCEL` isteği, `Call-ID` ve `CSeq` başlıkları üzerinden bekleyen `INVITE` işlemiyle eşleştirilmeli.
+        -   [ ] Eşleşen `INVITE` için ayrılan `media-service` portu derhal serbest bırakılmalı (`ReleasePort`).
+        -   [ ] İstemciye `200 OK` (CANCEL için) ve ardından `487 Request Terminated` (orijinal INVITE için) yanıtları gönderilmeli.
 
 -   [ ] **Görev ID: SIG-003 - Çağrı Transferi (`REFER`)**
-    -   **Açıklama:** Bir agent'ın veya AI'ın, aktif bir çağrıyı başka bir SIP kullanıcısına veya harici bir numaraya yönlendirmesini sağlayan `REFER` metodunu implemente et.
+    -   **Açıklama:** Aktif bir çağrıyı başka bir SIP kullanıcısına veya harici bir numaraya yönlendirmeyi sağlayan `REFER` metodunu implemente et.
     -   **Durum:** ⬜ Planlandı.
