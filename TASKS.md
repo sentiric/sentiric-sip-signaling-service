@@ -14,6 +14,12 @@ Bu fazın amacı, platformun temel gelen çağrı (`INVITE`) ve sonlandırma (`B
 -   [x] **`BYE` İşleme:** Aktif bir çağrıyı sonlandırma, ilgili medya portunu serbest bıraktırma ve `call.ended` olayını yayınlama.
 -   [x] **Aktif Çağrı Takibi:** Devam eden çağrıları ve ilgili port/trace ID'lerini hafızada tutma.
 
+-   [ ] **Görev ID: SIG-004 - Fazla Konuşkan Loglamayı Düzeltme**
+    -   **Açıklama:** `src/main.rs` dosyasındaki `tracing` yapılandırmasını, `OBSERVABILITY_STANDARD.md`'ye uygun hale getirerek `INFO` seviyesindeki gereksiz `enter/exit` loglarını kaldır.
+    -   **Kabul Kriterleri:**
+        -   [ ] Üretim/Free profilinde `INFO` seviyesinde sadece önemli olaylar loglanmalıdır.
+        -   [ ] Detaylı span logları sadece `DEBUG` seviyesinde görünür olmalıdır.
+        
 ---
 
 ### Faz 2: Gelişmiş Çağrı Kontrolü ve Kullanıcı Kaydı (Sıradaki Öncelik)
