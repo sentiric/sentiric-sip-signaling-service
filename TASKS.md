@@ -20,9 +20,14 @@ Bu belge, servisin geliştirme görevlerini projenin genel fazlarına uygun olar
     -   **Durum:** ✅ **Tamamlandı**
     -   **Kabul Kriterleri:** `call.started` ve `call.ended` olaylarını, `ResolveDialplanResponse`'tan gelen tüm zenginleştirilmiş verilerle birlikte RabbitMQ'ya başarılı bir şekilde yayınlar.
 
--   [ ] **Görev ID: SIG-005 - Çağrı Sonlandırma Olayını Dinleme**
-    - **Açıklama:** call.terminate.request olaylarını dinleyecek yeni bir RabbitMQ tüketicisi (consumer) oluştur. Bu olay geldiğinde, ilgili call_id için aktif SIP oturumunu bul ve istemciye bir BYE paketi göndererek çağrıyı sonlandır.
-
+- [ ] **Görev ID: SIG-005 - Çağrı Sonlandırma Olayını Dinleme (KRİTİK)**
+    -   **Açıklama:** `call.terminate.request` olaylarını dinleyecek yeni bir RabbitMQ tüketicisi (consumer) oluştur. Bu olay geldiğinde, ilgili `call_id` için aktif SIP oturumunu bul ve istemciye bir `BYE` paketi göndererek çağrıyı sonlandır.
+    -   **Kabul Kriterleri:**
+        -   [ ] Servis, `sentiric.signaling.terminate` gibi kendine özel, kalıcı bir kuyruğu dinlemelidir.
+        -   [ ] Gelen `call_id` için `active_calls` haritasından ilgili `SocketAddr` bilgisi bulunmalıdır.
+        -   [ ] Standart bir SIP `BYE` paketi oluşturulup bu adrese gönderilmelidir.
+        -   [ ] İlgili `media-service` portu serbest bırakılmalı ve `call.ended` olayı yayınlanmalıdır.
+        
 -   [ ] **Görev ID: SIG-004 - Fazla Konuşkan Loglamayı Düzeltme (KRİTİK & ACİL)**
     -   **Açıklama:** `src/main.rs` dosyasındaki `tracing` yapılandırmasını, `OBSERVABILITY_STANDARD.md`'ye uygun hale getirerek `INFO` seviyesindeki gereksiz `enter/exit` loglarını kaldır.
     -   **Kabul Kriterleri:**
