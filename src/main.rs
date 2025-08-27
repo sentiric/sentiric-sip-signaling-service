@@ -1,4 +1,4 @@
-// ========== FILE: sentiric-sip-signaling-service/src/main.rs
+// ========== FILE: sentiric-sip-signaling-service/src/main.rs (v4.1 - Build Hatası Düzeltildi) ==========
 use futures_util::StreamExt;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -29,15 +29,13 @@ use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{dialplan_service_client::DialplanServiceClient, ResolveDialplanRequest},
-    media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest, PlayAudioRequest},
+    media::v1::{media_service_client::MediaServiceClient, AllocatePortRequest}, // UYARI GİDERİLDİ: Kullanılmayan PlayAudioRequest kaldırıldı.
 };
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
 const TERMINATION_QUEUE_NAME: &str = "sentiric.signaling.terminate";
 
-// GÖREV SIG-005: Aktif çağrı bilgilerini saklamak için yeni struct.
-// Artık sadece port değil, BYE göndermek için gereken tüm bilgiler burada.
 #[derive(Clone)]
 struct ActiveCallInfo {
     remote_addr: SocketAddr,
@@ -49,12 +47,10 @@ struct ActiveCallInfo {
 
 type ActiveCalls = Arc<Mutex<HashMap<String, ActiveCallInfo>>>;
 
-// GÖREV SIG-005: Gelen sonlandırma isteğini parse etmek için struct.
 #[derive(Deserialize, Debug)]
 struct TerminationRequest {
     #[serde(rename = "callId")]
     call_id: String,
-    // Gelecekte eklenebilecek diğer alanlar (örn: reason)
 }
 
 #[derive(Clone)]
@@ -125,10 +121,7 @@ async fn connect_to_rabbitmq_with_retry(url: &str) -> Arc<LapinChannel> {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Arc::new(AppConfig::load_from_env()?);
-    
-    // GÖREV SIG-004: Loglama yapılandırması doğrulandı.
-    // Bu kod bloğu, `ENV` değişkenine göre production (json) ve development (pretty)
-    // loglamasını doğru bir şekilde ayırmaktadır. Kod değişikliği gerekmemektedir.
+
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let subscriber_builder = tracing_subscriber::fmt().with_env_filter(env_filter);
@@ -169,14 +162,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
     info!(address = %config.sip_listen_addr, "SIP Signaling başlatıldı.");
 
-    // GÖREV SIG-005: Çağrı sonlandırma dinleyicisini başlat.
     let term_sock_clone = Arc::clone(&sock);
-    let term_config_clone = Arc::clone(&config);
     let term_rabbit_channel_clone = Arc::clone(&rabbit_channel);
     let term_active_calls_clone = Arc::clone(&active_calls);
     tokio::spawn(listen_for_termination_requests(
         term_sock_clone,
-        term_config_clone,
         term_rabbit_channel_clone,
         term_active_calls_clone,
     ));
@@ -209,23 +199,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-// =====================================================================================
-// GÖREV SIG-005: YENİ FONKSİYON - RabbitMQ'dan gelen sonlandırma isteklerini dinler.
-// =====================================================================================
 #[instrument(skip_all)]
 async fn listen_for_termination_requests(
     sock: Arc<UdpSocket>,
-    config: Arc<AppConfig>,
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
 ) {
     info!(queue = TERMINATION_QUEUE_NAME, "Çağrı sonlandırma kuyruğu dinleniyor...");
 
+
     let mut consumer: Consumer = match rabbit_channel
         .queue_declare(
             TERMINATION_QUEUE_NAME,
             QueueDeclareOptions {
-                durable: true, // Sunucu yeniden başlasa bile kuyruk kalıcı olur.
+                durable: true,
                 ..Default::default()
             },
             FieldTable::default(),
@@ -237,7 +224,7 @@ async fn listen_for_termination_requests(
                 .queue_bind(
                     queue.name().as_str(),
                     RABBITMQ_EXCHANGE_NAME,
-                    "call.terminate.request", // Fanout exchange'de routing key önemsizdir ama belirtmek iyidir.
+                    "call.terminate.request",
                     QueueBindOptions::default(),
                     FieldTable::default(),
                 )
@@ -285,7 +272,7 @@ async fn listen_for_termination_requests(
 
                             info!("Aktif çağrı bulundu, BYE paketi gönderiliyor.");
 
-                            let bye_request = create_bye_request(&call_info.headers, &config);
+                            let bye_request = create_bye_request(&call_info.headers);
                             if let Err(e) =
                                 sock.send_to(bye_request.as_bytes(), call_info.remote_addr)
                                     .await
@@ -295,12 +282,11 @@ async fn listen_for_termination_requests(
                                 info!("BYE paketi başarıyla gönderildi.");
                             }
 
-                            // call.ended olayını yayınla
                             let event_payload = serde_json::json!({
                                 "eventType": "call.ended",
                                 "traceId": call_info.trace_id,
                                 "callId": call_id,
-                                "reason": "terminated_by_request", // Yeni sebep kodu
+                                "reason": "terminated_by_request",
                                 "timestamp": Utc::now().to_rfc3339()
                             });
                             let _ = rabbit_channel
@@ -428,13 +414,12 @@ async fn handle_invite(
     Span::current().record("destination", &destination_number as &str);
 
     {
-        let mut calls_guard = active_calls.lock().await;
+        // UYARI GİDERİLDİ: Bu blokta `calls_guard` değiştirilmediği için `mut` kaldırıldı.
+        let calls_guard = active_calls.lock().await;
         if calls_guard.contains_key(&call_id) {
             warn!("Yinelenen INVITE isteği alındı, görmezden gelindi.");
             return Ok(());
         }
-        // GÖREV SIG-005: Henüz port ve diğer bilgiler olmadığı için geçici bir kayıt atamayız.
-        // Kayıt, tüm orkestrasyon başarılı olduktan sonra yapılmalı.
     }
 
     sock.send_to(
@@ -442,8 +427,8 @@ async fn handle_invite(
         addr,
     )
     .await?;
+    
 
-    // ... (Mevcut dialplan ve acil durum akışı burada, değişiklik yok) ...
 
     let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
         caller_contact_value: caller_id.clone(),
@@ -548,7 +533,6 @@ async fn handle_invite(
 
     info!(rtp_port = server_rtp_port, "Medya portu ayrıldı.");
 
-    // GÖREV SIG-005: Zenginleştirilmiş çağrı bilgisini haritaya ekle.
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers
         .entry("To".to_string())
@@ -559,7 +543,7 @@ async fn handle_invite(
         rtp_port: server_rtp_port,
         trace_id: trace_id.clone(),
         created_at: Instant::now(),
-        headers: headers.clone(), // Klonla ve sakla
+        headers: headers.clone(),
     };
     active_calls.lock().await.insert(call_id.clone(), call_info);
 
@@ -609,7 +593,6 @@ async fn handle_bye(
 
         let call_info = { active_calls.lock().await.remove(&call_id) };
 
-        // GÖREV SIG-005: call_info artık ActiveCallInfo struct'ı içeriyor.
         if let Some(call_info) = call_info {
             Span::current().record("trace_id", &call_info.trace_id as &str);
             info!(port = call_info.rtp_port, "Çağrı sonlandırılıyor, olay yayınlanacak.");
@@ -652,8 +635,8 @@ fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Op
         Content-Length: {}\r\n\
         {}\r\n\
         {}", status_line, via_lines, headers.get("From").unwrap_or(&empty_string), headers.get("To").unwrap_or(&empty_string), headers.get("Call-ID").unwrap_or(&empty_string), headers.get("CSeq").unwrap_or(&empty_string), contact_header, body.len(), if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" }, body ) }
-// GÖREV SIG-005: YENİ FONKSİYON - Programatik olarak BYE isteği oluşturur.
-fn create_bye_request(headers: &HashMap<String, String>, config: &AppConfig) -> String {
+// UYARI GİDERİLDİ: `config` parametresi kullanılmadığı için `_config` olarak değiştirildi.
+fn create_bye_request(headers: &HashMap<String, String>) -> String {
     let empty_string = String::new();
     let original_cseq = headers.get("CSeq").unwrap_or(&empty_string);
     let cseq_num = original_cseq
@@ -662,7 +645,7 @@ fn create_bye_request(headers: &HashMap<String, String>, config: &AppConfig) -> 
         .unwrap_or("1")
         .parse::<u32>()
         .unwrap_or(1)
-        + 1; // CSeq numarasını artır
+        + 1;
 
     format!(
         "BYE {to_uri} SIP/2.0\r\n\
@@ -674,10 +657,10 @@ fn create_bye_request(headers: &HashMap<String, String>, config: &AppConfig) -> 
         Max-Forwards: 70\r\n\
         User-Agent: Sentiric Signaling Service\r\n\
         Content-Length: 0\r\n\r\n",
-        to_uri = headers.get("From").unwrap_or(&empty_string).split_whitespace().nth(0).unwrap_or(""), // BYE'da request URI'si karşı tarafın adresi olur.
+        to_uri = headers.get("From").unwrap_or(&empty_string).split_whitespace().nth(0).unwrap_or(""),
         via = headers.get("Via").unwrap_or(&empty_string),
-        from = headers.get("To").unwrap_or(&empty_string), // From bizim tarafımız (orijinal To)
-        to = headers.get("From").unwrap_or(&empty_string), // To karşı taraf (orijinal From)
+        from = headers.get("To").unwrap_or(&empty_string),
+        to = headers.get("From").unwrap_or(&empty_string),
         call_id = headers.get("Call-ID").unwrap_or(&empty_string),
         cseq = cseq_num
     )
@@ -690,7 +673,6 @@ async fn cleanup_old_transactions(transactions: ActiveCalls) {
         interval.tick().await;
         let mut guard = transactions.lock().await;
         let before_count = guard.len();
-        // GÖREV SIG-005: `retain` içindeki mantığı yeni struct'a göre güncelle.
         guard.retain(|_call_id, call_info| call_info.created_at.elapsed() < Duration::from_secs(120));
         let after_count = guard.len();
         if before_count > after_count {
