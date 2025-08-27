@@ -1,9 +1,9 @@
-// ========== FILE: src/sip/handler.rs ==========
+// ========== FILE: src/sip/handler.rs (Düzeltilmiş) ==========
 use super::{bye::handle_bye, invite::handle_invite};
 use crate::config::AppConfig;
 use crate::state::ActiveCalls;
 use lapin::Channel as LapinChannel;
-use std::error::Error;
+// HATA DÜZELTMESİ: Kullanılmayan import kaldırıldı.
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -11,14 +11,17 @@ use tracing::{debug, error, info, instrument};
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id))]
 pub async fn handle_sip_request(
-    request_bytes: &[u8],
+    // HATA DÜZELTMESİ: Fonksiyon imzası &[u8] yerine Vec<u8> alacak şekilde değiştirildi.
+    // Bu, main döngüsünden sahipliği verimli bir şekilde aktarır.
+    request_bytes: Vec<u8>,
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
     config: Arc<AppConfig>,
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
 ) {
-    let request_str = match std::str::from_utf8(request_bytes) {
+    // Artık parametre bir Vec<u8> olduğu için, ona bir referans (&) ile yaklaşıyoruz.
+    let request_str = match std::str::from_utf8(&request_bytes) {
         Ok(s) => s,
         Err(e) => {
             error!(error = %e, "Geçersiz UTF-8 dizisi alındı.");

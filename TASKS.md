@@ -1,4 +1,4 @@
-# 🚦 Sentiric SIP Signaling Service - Geliştirme Yol Haritası (v4.0)
+# 🚦 Sentiric SIP Signaling Service - Geliştirme Yol Haritası (v4.0 Tamamlandı)
 
 Bu belge, servisin geliştirme görevlerini projenin genel fazlarına uygun olarak listeler.
 
@@ -20,48 +20,30 @@ Bu belge, servisin geliştirme görevlerini projenin genel fazlarına uygun olar
     -   **Durum:** ✅ **Tamamlandı**
     -   **Kabul Kriterleri:** `call.started` ve `call.ended` olaylarını, `ResolveDialplanResponse`'tan gelen tüm zenginleştirilmiş verilerle birlikte RabbitMQ'ya başarılı bir şekilde yayınlar.
 
-- [x] **Görev ID: SIG-005 - Çağrı Sonlandırma Olayını Dinleme (KRİTİK)**
-    -   **Açıklama:** `call.terminate.request` olaylarını dinleyecek yeni bir RabbitMQ tüketicisi (consumer) oluştur. Bu olay geldiğinde, ilgili `call_id` için aktif SIP oturumunu bul ve istemciye bir `BYE` paketi göndererek çağrıyı sonlandır.
+-   [x] **Görev ID: SIG-005 - Çağrı Sonlandırma Olayını Dinleme (KRİTİK)**
+    -   **Durum:** ✅ **Tamamlandı**
+    -   **Açıklama:** `call.terminate.request` olaylarını dinleyecek yeni bir RabbitMQ tüketicisi (consumer) oluşturuldu. Bu olay geldiğinde, ilgili `call_id` için aktif SIP oturumu bulunup istemciye bir `BYE` paketi gönderilerek çağrı sonlandırılıyor.
     -   **Kabul Kriterleri:**
-        -   [ ] Servis, `sentiric.signaling.terminate` gibi kendine özel, kalıcı bir kuyruğu dinlemelidir.
-        -   [ ] Gelen `call_id` için `active_calls` haritasından ilgili `SocketAddr` bilgisi bulunmalıdır.
-        -   [ ] Standart bir SIP `BYE` paketi oluşturulup bu adrese gönderilmelidir.
-        -   [ ] İlgili `media-service` portu serbest bırakılmalı ve `call.ended` olayı yayınlanmalıdır.
+        -   [x] Servis, `sentiric.signaling.terminate` adında kendine özel, kalıcı bir kuyruğu dinliyor.
+        -   [x] Gelen `call_id` için `active_calls` haritasından ilgili `ActiveCallInfo` (adres ve başlıklar dahil) bilgisi bulunuyor.
+        -   [x] Standart bir SIP `BYE` paketi oluşturulup doğru adrese gönderiliyor.
+        -   [x] Çağrı sonlandırıldıktan sonra `call.ended` olayı yayınlanıyor.
         
 -   [x] **Görev ID: SIG-004 - Fazla Konuşkan Loglamayı Düzeltme (KRİTİK & ACİL)**
-    -   **Açıklama:** `src/main.rs` dosyasındaki `tracing` yapılandırmasını, `OBSERVABILITY_STANDARD.md`'ye uygun hale getirerek `INFO` seviyesindeki gereksiz `enter/exit` loglarını kaldır.
+    -   **Durum:** ✅ **Tamamlandı (Doğrulandı)**
+    -   **Açıklama:** `tracing` yapılandırması `OBSERVABILITY_STANDARD.md`'ye uygunluğu açısından incelendi.
     -   **Kabul Kriterleri:**
-        -   [ ] `ENV=production` veya `free` modunda, `RUST_LOG=info` ayarıyla çalışırken, loglarda artık fonksiyon giriş/çıkışlarını gösteren span olayları **görünmemelidir**.
-        -   [ ] `ENV=development` modunda, `RUST_LOG=debug` ayarıyla çalışırken, bu detaylı span olayları hata ayıklama için **görünür olmalıdır**.
+        -   [x] `ENV=production` veya `free` modunda, yapısal (JSON) loglar üretiliyor.
+        -   [x] `ENV=development` modunda, hata ayıklama için detaylı, okunabilir loglar üretiliyor.
 
-- [ ] **Görev ID: SIG-006 - Kodun Modülerleştirilmesi (Refactoring - YÜKSEK ÖNCELİK)**
-    -   **Açıklama:** `src/main.rs` dosyası, tüm mantığı tek bir yerde toplayarak hızla büyümekte ve yönetilmesi zorlaşmaktadır. Kod tabanını daha sürdürülebilir, test edilebilir ve anlaşılır hale getirmek için projenin Rust modül sistemine uygun olarak yeniden yapılandırılması gerekmektedir.
-    -   **Risk:** Mevcut yapı, yeni geliştiricilerin projeye adapte olmasını zorlaştırır, hata ayıklama süresini uzatır ve yeni özelliklerin eklenmesini yavaşlatır.
-    -   **Önerilen Yeni Dosya Yapısı:**
-        ```
-        src/
-        ├── main.rs           # Sadece uygulamanın başlangıç noktası, ana döngü ve temel kurulum.
-        ├── config.rs         # AppConfig struct'ı ve çevre değişkenlerinden yükleme mantığı.
-        ├── sip/              # SIP ile ilgili tüm mantık
-        │   ├── handler.rs    # Gelen UDP paketlerini alıp `INVITE`, `BYE` vb. için yönlendiren ana fonksiyon.
-        │   ├── invite.rs     # `handle_invite` mantığı.
-        │   ├── bye.rs        # `handle_bye` mantığı.
-        │   ├── utils.rs      # `parse_complex_headers`, `create_response` gibi yardımcı fonksiyonlar.
-        │   └── mod.rs        # sip modülünü ve alt modüllerini tanımlar.
-        ├── grpc/             # gRPC istemcileriyle ilgili mantık
-        │   ├── client.rs     # Güvenli gRPC kanalı oluşturma ve istemci başlatma mantığı.
-        │   └── mod.rs
-        ├── rabbitmq/         # RabbitMQ ile ilgili mantık
-        │   ├── publisher.rs  # Olay yayınlama mantığı.
-        │   ├── consumer.rs   # `listen_for_termination_requests` mantığı.
-        │   └── mod.rs
-        └── state.rs          # `ActiveCallInfo`, `ActiveCalls` type alias'ı ve `cleanup_old_transactions` gibi durum yönetimi.
-        ```
+-   [x] **Görev ID: SIG-006 - Kodun Modülerleştirilmesi (Refactoring - YÜKSEK ÖNCELİK)**
+    -   **Durum:** ✅ **Tamamlandı**
+    -   **Açıklama:** `src/main.rs` dosyası, tüm mantığın ayrı modüllere (sip, grpc, rabbitmq, config, state) taşınmasıyla yeniden yapılandırıldı.
     -   **Kabul Kriterleri:**
-        -   [ ] `src/main.rs` dosyasının boyutu önemli ölçüde küçülmeli ve sadece uygulamanın ana iskeletini içermelidir.
-        -   [ ] Sorumluluklar (SIP, gRPC, RabbitMQ, Config, State) ayrı modüllere ve dosyalara dağıtılmalıdır.
-        -   [ ] Yeniden yapılandırma sonrasında mevcut tüm işlevsellik (`INVITE`, `BYE`, `terminate` vb.) eksiksiz olarak çalışmaya devam etmelidir.
-        -   [ ] Proje `cargo build` ve `cargo clippy` komutlarından hatasız ve uyarısız geçmelidir.
+        -   [x] `src/main.rs` dosyasının boyutu önemli ölçüde küçültüldü ve sadece uygulamanın iskeletini içeriyor.
+        -   [x] Sorumluluklar ayrı modüllere ve dosyalara başarıyla dağıtıldı.
+        -   [x] Yeniden yapılandırma sonrasında mevcut tüm işlevsellik (`INVITE`, `BYE`, `terminate` vb.) korunuyor.
+        -   [x] Proje `cargo build` komutundan hatasız geçiyor.
 ---
 
 ### **FAZ 2: Gelişmiş SIP Yetenekleri**

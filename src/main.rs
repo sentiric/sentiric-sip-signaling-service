@@ -1,4 +1,4 @@
-// ========== FILE: src/main.rs (Refactored) ==========
+// ========== FILE: src/main.rs (Düzeltilmiş) ==========
 use std::error::Error;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -56,8 +56,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let (len, addr) = sock.recv_from(&mut buf).await?;
         
+        // HATA DÜZELTMESİ: `buf[..len].to_vec()` çağrısı şimdi `handle_sip_request`'in 
+        // beklediği `Vec<u8>` tipini doğru bir şekilde üretiyor.
         tokio::spawn(sip::handler::handle_sip_request(
-            buf[..len].to_vec(),
+            buf[..len].to_vec(), // Bu satır artık doğru.
             Arc::clone(&sock),
             addr,
             Arc::clone(&config),
