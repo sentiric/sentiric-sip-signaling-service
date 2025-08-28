@@ -1,4 +1,5 @@
-// ========== FILE: src/sip/bye.rs ==========
+// File: sentiric-sip-signaling-service/src/sip/bye.rs
+
 use super::utils::{create_response, parse_complex_headers};
 use crate::config::AppConfig;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
@@ -41,7 +42,7 @@ pub async fn handle_bye(
             rabbit_channel
                 .basic_publish(
                     RABBITMQ_EXCHANGE_NAME,
-                    "",
+                    "call.ended", // <<< DEĞİŞİKLİK BURADA
                     BasicPublishOptions::default(),
                     event_payload.to_string().as_bytes(),
                     BasicProperties::default().with_delivery_mode(2),

@@ -1,5 +1,6 @@
-// ========== FILE: src/rabbitmq/connection.rs ==========
-use lapin::{options::*, types::FieldTable, Channel as LapinChannel, Connection, ConnectionProperties};
+// File: sentiric-sip-signaling-service/src/rabbitmq/connection.rs
+
+use lapin::{options::*, types::FieldTable, Channel as LapinChannel, Connection, ConnectionProperties, ExchangeKind};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -30,7 +31,7 @@ pub async fn declare_exchange(channel: &LapinChannel) -> Result<(), lapin::Error
     channel
         .exchange_declare(
             RABBITMQ_EXCHANGE_NAME,
-            lapin::ExchangeKind::Fanout,
+            ExchangeKind::Topic, // <<< DEĞİŞİKLİK BURADA
             ExchangeDeclareOptions {
                 durable: true,
                 ..Default::default()

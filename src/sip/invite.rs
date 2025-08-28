@@ -1,4 +1,5 @@
-// ========== FILE: src/sip/invite.rs (Düzeltilmiş) ==========
+// File: sentiric-sip-signaling-service/src/sip/invite.rs
+
 use super::utils::{
     create_response, extract_sdp_media_info, extract_user_from_uri, parse_complex_headers,
 };
@@ -18,8 +19,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
-// HATA DÜZELTMESİ: Kullanılmayan `Status` import'u kaldırıldı.
-use tonic::{Request as TonicRequest};
+use tonic::Request as TonicRequest;
 use tracing::{error, info, instrument, warn, Span};
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id, caller, destination))]
@@ -153,7 +153,7 @@ pub async fn handle_invite(
     rabbit_channel
         .basic_publish(
             RABBITMQ_EXCHANGE_NAME,
-            "",
+            "call.started", // <<< DEĞİŞİKLİK BURADA
             BasicPublishOptions::default(),
             event_payload.to_string().as_bytes(),
             BasicProperties::default().with_delivery_mode(2),

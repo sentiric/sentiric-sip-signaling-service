@@ -1,4 +1,5 @@
-// ========== FILE: src/rabbitmq/terminate.rs ==========
+// File: sentiric-sip-signaling-service/src/rabbitmq/terminate.rs
+
 use super::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::utils::create_bye_request;
 use crate::state::ActiveCalls;
@@ -101,7 +102,7 @@ pub async fn listen_for_termination_requests(
                     let _ = rabbit_channel
                         .basic_publish(
                             RABBITMQ_EXCHANGE_NAME,
-                            "",
+                            "call.ended", // <<< DEĞİŞİKLİK BURADA
                             BasicPublishOptions::default(),
                             event_payload.to_string().as_bytes(),
                             BasicProperties::default().with_delivery_mode(2),
