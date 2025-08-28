@@ -25,4 +25,4 @@ futures-util = "0.3" # HATA DÜZELTMESİ: Eksik kütüphane eklendi.
 # YENİ KONTRAK VERSİYONU
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
-tag = "v1.8.2"
+tag = "v1.8.3"
