@@ -33,17 +33,12 @@ pub async fn handle_invite(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut headers = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
-    
-    // --- YENİ: Yinelenen INVITE Kontrolü ---
-    // Bir INVITE işlemeye başlamadan önce, bu Call-ID'nin zaten işlenip işlenmediğini kontrol et.
+
+    // --- Yinelenen INVITE Kontrolü ---
     if active_calls.lock().await.contains_key(&call_id) {
-        // Eğer zaten listedeyse, bu yinelenen bir re-transmission'dır.
-        // Sadece 100 Trying gönderip işlemi sonlandırabiliriz veya tamamen görmezden gelebiliriz.
-        // Şimdilik görmezden gelmek en güvenlisi.
         warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı, görmezden geliniyor.");
         return Ok(());
     }
-    // --- KONTROL SONU ---
 
     let from_uri = headers.get("From").cloned().unwrap_or_default();
     let to_uri = headers.get("To").cloned().unwrap_or_default();
@@ -59,33 +54,12 @@ pub async fn handle_invite(
     Span::current().record("trace_id", &trace_id as &str);
     Span::current().record("caller", &caller_id as &str);
     Span::current().record("destination", &destination_number as &str);
-    
-    // 'active_calls.lock()' kontrolü yukarı taşındığı için bu bloğu silebiliriz.
-    /*
-    if active_calls.lock().await.contains_key(&call_id) {
-        warn!("Yinelenen INVITE isteği alındı, görmezden gelindi.");
-        return Ok(());
-    }
-    */
 
     sock.send_to(
         create_response("100 Trying", &headers, None, &config).as_bytes(),
         addr,
     )
     .await?;
-
-    // ... fonksiyonun geri kalanı tamamen aynı ...
-    
-    // ActiveCallInfo'yu oluşturup eklemeden hemen önce, bir kez daha kontrol edebiliriz
-    // ama baştaki kontrol yeterli olmalı.
-    let call_info = ActiveCallInfo {
-        remote_addr: addr,
-        rtp_port,
-        trace_id: trace_id.clone(),
-        created_at: std::time::Instant::now(),
-        headers: headers.clone(),
-    };
-    active_calls.lock().await.insert(call_id.clone(), call_info);
 
     let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
         caller_contact_value: caller_id.clone(),
@@ -140,19 +114,21 @@ pub async fn handle_invite(
 
     info!(rtp_port, "Medya portu ayrıldı.");
 
+    // --- DÜZELTME: ActiveCallInfo oluşturma bloğu, rtp_port tanımlandıktan SONRA olmalı ---
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers
         .entry("To".to_string())
         .and_modify(|v| *v = format!("{}{}", v, to_tag));
-
+    
     let call_info = ActiveCallInfo {
         remote_addr: addr,
-        rtp_port,
+        rtp_port, // Artık bu değişken tanımlı ve scope içinde
         trace_id: trace_id.clone(),
         created_at: std::time::Instant::now(),
         headers: headers.clone(),
     };
     active_calls.lock().await.insert(call_id.clone(), call_info);
+    // --- DÜZELTME SONU ---
 
     let sdp_body = format!(
         "v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
@@ -181,7 +157,7 @@ pub async fn handle_invite(
     rabbit_channel
         .basic_publish(
             RABBITMQ_EXCHANGE_NAME,
-            "call.started", // <<< DEĞİŞİKLİK BURADA
+            "call.started",
             BasicPublishOptions::default(),
             event_payload.to_string().as_bytes(),
             BasicProperties::default().with_delivery_mode(2),
