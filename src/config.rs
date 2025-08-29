@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub user_service_url: String,
     pub rabbitmq_url: String,
     pub env: String,
+    pub sip_realm: String,
 }
 
 impl fmt::Debug for AppConfig {
@@ -46,6 +47,7 @@ impl AppConfig {
             user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
             dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
             env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
+            sip_realm: env::var("SIP_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
         })
     }
 }

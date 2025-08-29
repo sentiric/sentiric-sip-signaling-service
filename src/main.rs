@@ -12,7 +12,7 @@ mod sip;
 mod state;
 
 use config::AppConfig;
-use state::{ActiveCalls, cleanup_old_transactions};
+use state::{ActiveCalls, Registrations, cleanup_old_transactions}; // Registrations'ı ekle
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -37,8 +37,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!(config = ?config, "Konfigürasyon yüklendi.");
 
     let active_calls: ActiveCalls = Arc::new(Default::default());
+    let registrations: Registrations = Arc::new(Default::default()); // YENİ SATIR
+
     let rabbit_channel = rabbitmq::connection::connect_with_retry(&config.rabbitmq_url).await;
-    rabbitmq::connection::declare_exchange(&rabbit_channel).await?;
+        rabbitmq::connection::declare_exchange(&rabbit_channel)
+            .await
+            .expect("RabbitMQ exchange'i deklare edilemedi"); // YENİ SATIRLAR
+    info!(exchange_name = rabbitmq::connection::RABBITMQ_EXCHANGE_NAME, "RabbitMQ exchange'i deklare edildi.");
+
     info!(exchange_name = rabbitmq::connection::RABBITMQ_EXCHANGE_NAME, "RabbitMQ exchange'i deklare edildi.");
     
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
@@ -56,15 +62,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let (len, addr) = sock.recv_from(&mut buf).await?;
         
-        // HATA DÜZELTMESİ: `buf[..len].to_vec()` çağrısı şimdi `handle_sip_request`'in 
-        // beklediği `Vec<u8>` tipini doğru bir şekilde üretiyor.
         tokio::spawn(sip::handler::handle_sip_request(
-            buf[..len].to_vec(), // Bu satır artık doğru.
+            buf[..len].to_vec(),
             Arc::clone(&sock),
             addr,
             Arc::clone(&config),
             Arc::clone(&rabbit_channel),
             Arc::clone(&active_calls),
+            Arc::clone(&registrations), // YENİ PARAMETRE
         ));
     }
 }
