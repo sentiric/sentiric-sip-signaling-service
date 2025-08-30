@@ -33,6 +33,16 @@ Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Sen
 
 **Amaç:** Platformu, AI ve insan ajanların bir arada çalışabildiği hibrit bir sisteme dönüştürmek ve teknik gözlem yeteneklerini en üst düzeye çıkarmak. Bu faz, platformun "ürünleşmesi" için kritik öneme sahiptir.
 
+-   [ ] **Görev ID:** `SIG-BUG-01`
+    *   **Açıklama:** `agent-service`'ten gelen sonlandırma isteği üzerine `sip-signaling` tarafından gönderilen `BYE` paketinin neden istemci tarafından işlenmediğini araştır ve düzelt. Bu, `Via`, `Route`, `Record-Route` başlıklarının doğru yönetilmesini gerektirebilir.
+    *   **Kabul Kriterleri:**
+        *   [ ] Sistem "Çağrıyı sonlandırıyorum" anonsunu çaldıktan sonra, softphone'un çağrıyı **otomatik olarak kapatması** gerekir.
+
+-   [ ] **Görev ID:** `AGENT-BUG-05`
+    *   **Açıklama:** `call.terminate.request` olayı yayınlanırken, JSON payload'una `eventType: "call.terminate.request"` alanının eklenmesini sağla.
+    *   **Kabul Kriterleri:**
+        *   [ ] `call_events` tablosunda artık `event_type` alanı boş olan kayıtlar görülmemelidir.
+
 -   [ ] **Görev ID: SIG-012 - Çağrı Transferi (`REFER`)**
     -   **Durum:** ⬜ **Planlandı (SIRADAKİ EN YÜKSEK ÖNCELİK)**
     -   **Stratejik Önem:** Bu görev, AI'ın çağrıyı bir insana devredebilmesinin ("escape hatch") teknik temelidir. Bu olmadan, `web-agent-ui` gibi insan odaklı arayüzler işlevsiz kalır. Platformun hibrit bir yapıya kavuşması için **zorunludur**.
@@ -58,6 +68,14 @@ Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Sen
 
 ### **FAZ 3: Protokol Uyumluluğu ve Dayanıklılık**
 
+-   [ ] **Görev ID: SIG-BUG-01 - Çağrı Sonlandırma (`BYE`) Akışını Sağlamlaştırma (YÜKSEK ÖNCELİK)**
+    -   **Durum:** ⬜ Planlandı
+    -   **Açıklama:** `agent-service` tarafından tetiklenen çağrı sonlandırma işleminin, istemci softphone'u güvenilir bir şekilde kapatmaması sorununun çözülmesi. Bu, hem doğru faturalandırma (süre hesaplama) hem de iyi bir kullanıcı deneyimi için kritiktir.
+    -   **Kabul Kriterleri:**
+        -   [ ] `agent-service` `call.terminate.request` olayını yayınladıktan sonra, `sip-signaling` tarafından gönderilen `BYE` paketinin istemciye ulaştığı ve istemcinin çağrıyı **otomatik olarak sonlandırdığı** doğrulanmalıdır.
+        -   [ ] Bu akış sırasında gönderilen `BYE` paketinin SIP başlıkları (`Via`, `Route`, `Record-Route` vb.) incelenmeli ve RFC standartlarına uygunluğu kontrol edilmelidir.
+        -   [ ] Çağrı sonlandıktan sonra, istemciden gelebilecek yinelenen `BYE` istekleri, servisin çökmesine veya hatalı davranışına neden olmamalı, güvenli bir şekilde `481 Call/Transaction Does Not Exist` yanıtı ile karşılanmalıdır.
+        
 **Amaç:** Platformun standart SIP istemcileriyle tam uyumlu çalışmasını sağlamak ve beklenmedik senaryolara karşı daha dayanıklı hale getirmek.
 
 -   [ ] **Görev ID: SIG-011 - `CANCEL` Metodu Desteği**
