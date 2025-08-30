@@ -1,18 +1,19 @@
-// ========== FILE: src/main.rs (Düzeltilmiş) ==========
+// File: src/main.rs
+
 use std::error::Error;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-
 use tracing::info;
 
 mod config;
 mod grpc;
 mod rabbitmq;
+mod redis; // <-- YENİ MODÜL
 mod sip;
 mod state;
 
 use config::AppConfig;
-use state::{ActiveCalls, Registrations, cleanup_old_transactions}; // Registrations'ı ekle
+use state::{ActiveCalls, cleanup_old_transactions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -37,14 +38,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!(config = ?config, "Konfigürasyon yüklendi.");
 
     let active_calls: ActiveCalls = Arc::new(Default::default());
-    let registrations: Registrations = Arc::new(Default::default()); // YENİ SATIR
+    // AÇIKLAMA: Artık Registrations yerine Redis istemcisini başlatıyoruz.
+    let redis_client = Arc::new(redis::connect_with_retry(&config.redis_url).await);
 
     let rabbit_channel = rabbitmq::connection::connect_with_retry(&config.rabbitmq_url).await;
-        rabbitmq::connection::declare_exchange(&rabbit_channel)
-            .await
-            .expect("RabbitMQ exchange'i deklare edilemedi"); // YENİ SATIRLAR
-    info!(exchange_name = rabbitmq::connection::RABBITMQ_EXCHANGE_NAME, "RabbitMQ exchange'i deklare edildi.");
-
+    rabbitmq::connection::declare_exchange(&rabbit_channel).await?;
     info!(exchange_name = rabbitmq::connection::RABBITMQ_EXCHANGE_NAME, "RabbitMQ exchange'i deklare edildi.");
     
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
@@ -69,7 +67,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Arc::clone(&config),
             Arc::clone(&rabbit_channel),
             Arc::clone(&active_calls),
-            Arc::clone(&registrations), // YENİ PARAMETRE
+            Arc::clone(&redis_client), // AÇIKLAMA: Artık redis_client'i paslıyoruz.
         ));
     }
 }

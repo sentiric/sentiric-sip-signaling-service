@@ -20,10 +20,10 @@ once_cell = "1.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prost = "0.12"
 rand_distr = "0.4.3"
-futures-util = "0.3" # HATA DÜZELTMESİ: Eksik kütüphane eklendi.
-
+futures-util = "0.3"
+redis = { version = "0.25", features = ["tokio-comp"] } # <-- YENİ SATIR
 
 # YENİ KONTRAK VERSİYONU
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
-tag = "v1.8.5"
+tag = "v1.8.6"

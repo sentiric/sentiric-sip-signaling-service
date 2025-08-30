@@ -1,8 +1,8 @@
-// File: src/sip/handler.rs (Düzeltilmiş Hali)
+// File: sentiric-sip-signaling-service/src/sip/handler.rs
 
 use super::{bye::handle_bye, invite::handle_invite, register::handle_register};
 use crate::config::AppConfig;
-use crate::state::{ActiveCalls, Registrations};
+use crate::state::ActiveCalls; // <-- AÇIKLAMA: Registrations import'u kaldırıldı.
 use lapin::Channel as LapinChannel;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,7 +17,7 @@ pub async fn handle_sip_request(
     config: Arc<AppConfig>,
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
-    registrations: Registrations,
+    redis_client: Arc<redis::Client>, // <-- AÇIKLAMA: Artık Registrations yerine redis::Client alıyor.
 ) {
     let request_str = match std::str::from_utf8(&request_bytes) {
         Ok(s) => s,
@@ -30,8 +30,8 @@ pub async fn handle_sip_request(
     let result = if request_str.starts_with("INVITE") {
         handle_invite(request_str, sock, addr, config, rabbit_channel, active_calls).await
     } else if request_str.starts_with("REGISTER") {
-        // DÜZELTME: Artık doğru sayıda ve doğru parametreleri gönderiyoruz.
-        handle_register(request_str, sock, addr, config, registrations).await
+        // AÇIKLAMA: handle_register'a redis_client'i paslıyoruz.
+        handle_register(request_str, sock, addr, config, redis_client).await
     } else if request_str.starts_with("BYE") {
         handle_bye(request_str, sock, addr, config, rabbit_channel, active_calls).await
     } else if request_str.starts_with("ACK") {

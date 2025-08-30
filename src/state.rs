@@ -1,4 +1,4 @@
-// File: src/state.rs (Uyarı Düzeltmesi)
+// File: sentiric-sip-signaling-service/src/state.rs
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -18,14 +18,7 @@ pub struct ActiveCallInfo {
 
 pub type ActiveCalls = Arc<Mutex<HashMap<String, ActiveCallInfo>>>;
 
-#[derive(Clone)]
-pub struct RegistrationInfo {
-    // DÜZELTME: Kullanılmayan alan uyarısını susturmak için _ öneki
-    pub _contact_uri: String,
-    pub _expires_at: Instant,
-}
-
-pub type Registrations = Arc<Mutex<HashMap<String, RegistrationInfo>>>;
+// Artık Registrations burada tutulmadığı için tamamen kaldırıldı.
 
 pub async fn cleanup_old_transactions(transactions: ActiveCalls) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));

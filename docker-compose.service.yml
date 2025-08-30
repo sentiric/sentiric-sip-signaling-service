@@ -7,6 +7,7 @@ networks:
 volumes:
   postgres_data:
   rabbitmq_data:
+  redis_data:
 
 services:
   # --- VERİ KATMANI ---
@@ -37,6 +38,19 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  redis:
+    build: { context: ../sentiric-redis }
+    env_file: ["${ENV_FILE_PATH}"]  
+    ports: ["6379:6379"]
+    volumes: [redis_data:/data]
+    networks: [sentiric-net]
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5      
 
   # --- UYGULAMA SERVİSLERİ ---
   user-service:
@@ -94,5 +108,9 @@ services:
     volumes: ["${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"]
     networks: [sentiric-net]
     restart: always
-    depends_on: { rabbitmq: { condition: service_healthy }, media-service: { condition: service_healthy } }
+    depends_on: { 
+      rabbitmq: { condition: service_healthy },
+      media-service: { condition: service_healthy },
+      redis: { condition: service_healthy },
+    }
 
