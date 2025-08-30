@@ -1,11 +1,12 @@
-// File: sentiric-sip-signaling-service/src/sip/utils.rs
+// File: src/sip/utils.rs (TAM VE GÜNCELLENMİŞ HALİ)
 
 use crate::config::AppConfig;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use tracing::{info, warn};
+// DÜZELTME 1: `debug` makrosunu import ediyoruz.
+use tracing::{debug, info, warn};
 use rand::Rng;
 
 // --- EKSİK OLAN KISIM BURASIYDI ---
@@ -65,7 +66,7 @@ pub fn create_response(
     let from_header = headers.get("From").unwrap_or(&empty_string);
     let mut to_header = headers.get("To").unwrap_or(&empty_string).clone();
 
-    if !to_header.contains(";tag=") {
+    if !to_header.contains(";tag=") && status_line != "100 Trying" {
         let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
         to_header.push_str(&to_tag);
     }
@@ -106,7 +107,7 @@ pub fn create_response(
         body
     );
 
-    info!(
+    debug!(
         response_to = %remote_addr,
         response_body = %response_string.replace("\r\n", "\\r\\n"),
         "SIP yanıtı gönderiliyor."
@@ -114,6 +115,7 @@ pub fn create_response(
 
     response_string
 }
+
 
 pub fn create_bye_request(headers: &HashMap<String, String>) -> String {
     let empty_string = String::new();

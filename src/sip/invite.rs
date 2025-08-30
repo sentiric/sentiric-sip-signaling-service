@@ -1,4 +1,4 @@
-// File: sentiric-sip-signaling-service/src/sip/invite.rs
+// File: src/sip/invite.rs (TAM VE GÜNCELLENMİŞ HALİ)
 
 use super::utils::{
     create_response, extract_sdp_media_info, extract_user_from_uri, parse_complex_headers,
@@ -6,6 +6,7 @@ use super::utils::{
 use crate::config::AppConfig;
 use crate::grpc::client::create_secure_grpc_channel;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
+use crate::redis::{self, AsyncCommands};
 use crate::state::{ActiveCallInfo, ActiveCalls};
 use lapin::{options::*, BasicProperties, Channel as LapinChannel};
 use rand::distributions::{Alphanumeric, DistString};
@@ -20,7 +21,8 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
 use tonic::Request as TonicRequest;
-use tracing::{error, info, instrument, warn, Span};
+// DÜZELTME 2: `debug` makrosunu buraya da import ediyoruz.
+use tracing::{debug, error, info, instrument, warn, Span};
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id, caller, destination))]
 pub async fn handle_invite(
@@ -30,6 +32,7 @@ pub async fn handle_invite(
     config: Arc<AppConfig>,
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
+    redis_client: Arc<redis::Client>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut headers = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
@@ -54,8 +57,42 @@ pub async fn handle_invite(
     Span::current().record("caller", &caller_id as &str);
     Span::current().record("destination", &destination_number as &str);
 
+    if !destination_number.starts_with("90") {
+        info!(destination_user = %destination_number, "Kullanıcıdan kullanıcıya arama tespit edildi. Redis'ten adres sorgulanıyor...");
+
+        let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let aor = format!("sip_registration:sip:{}@{}", destination_number, config.sip_realm);
+        let target_contact_uri: Option<String> = conn.get(aor).await?;
+
+        if let Some(contact_uri) = target_contact_uri {
+            info!(contact = %contact_uri, "Hedef kullanıcı bulundu.");
+            
+            // TODO: [P2P Proxy Mantığı - Faz 2]
+            // 1. Gelen INVITE paketini kopyala.
+            // 2. Request-URI'ı `contact_uri` ile değiştir.
+            // 3. Via başlıklarını yönet: En üstteki Via başlığını kaldır, kendi Via başlığımızı ekle.
+            // 4. Record-Route başlıkları ekleyerek diyaloğun geri dönüş yolunu garantile.
+            // 5. Modifiye edilmiş paketi `contact_uri`'daki adrese UDP ile gönder.
+            // Bu, tam teşekküllü bir SIP Proxy davranışı gerektirir.
+            warn!("P2P proxy mantığı henüz implemente edilmedi. Çağrı reddediliyor.");
+            sock.send_to(
+                create_response("404 Not Found", &headers, None, &config, addr).as_bytes(),
+                addr,
+            ).await?;
+            return Ok(());
+        } else {
+            warn!(destination_user = %destination_number, "Hedef kullanıcı kayıtlı değil veya çevrimdışı. Çağrı reddediliyor.");
+            sock.send_to(
+                create_response("404 Not Found", &headers, None, &config, addr).as_bytes(),
+                addr,
+            ).await?;
+            return Ok(());
+        }
+    }
+
+    debug!("100 Trying yanıtı gönderiliyor...");
     sock.send_to(
-        create_response("100 Trying", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #1
+        create_response("100 Trying", &headers, None, &config, addr).as_bytes(),
         addr,
     )
     .await?;
@@ -77,7 +114,7 @@ pub async fn handle_invite(
     if let Err(e) = dialplan_result {
         error!(error = %e, "Dialplan'den karar alınamadı.");
         sock.send_to(
-            create_response("503 Service Unavailable", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #2
+            create_response("503 Service Unavailable", &headers, None, &config, addr).as_bytes(),
             addr,
         )
         .await?;
@@ -103,7 +140,7 @@ pub async fn handle_invite(
         Err(e) => {
             error!(error = %e, "Media service'ten port alınamadı.");
             sock.send_to(
-                create_response("503 Service Unavailable", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #3
+                create_response("503 Service Unavailable", &headers, None, &config, addr).as_bytes(),
                 addr,
             )
             .await?;
@@ -134,13 +171,14 @@ pub async fn handle_invite(
         rtp_port
     );
 
+    debug!("180 Ringing yanıtı gönderiliyor...");
     sock.send_to(
-        create_response("180 Ringing", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #4
+        create_response("180 Ringing", &headers, None, &config, addr).as_bytes(),
         addr,
     )
     .await?;
     sleep(std::time::Duration::from_millis(100)).await;
-    let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config, addr); // <-- DÜZELTME #5
+    let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config, addr);
     sock.send_to(ok_response.as_bytes(), addr).await?;
 
     info!("Çağrı başarıyla yanıtlandı (200 OK gönderildi).");
