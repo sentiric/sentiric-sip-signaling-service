@@ -1,105 +1,94 @@
-### **`sentiric-sip-signaling-service/TASKS.md` (Kapsamlı Revizyon v5.0)**
+### **`sentiric-sip-signaling-service/TASKS.md` (Stratejik Revizyon v5.1)**
 
-# 🚦 Sentiric SIP Signaling Service - Geliştirme Yol Haritası (v5.0)
+# 🚦 Sentiric SIP Signaling Service - Geliştirme Yol Haritası (v5.1)
 
-Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Senkron Çağrı Kurulum Orkestratörü"** rolünü eksiksiz yerine getirmesi için gereken tüm görevleri fazlara ayrılmış şekilde listeler.
+Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Senkron Çağrı Kurulum Orkestratörü"** rolünden, tam teşekküllü bir **"İletişim Yönlendiricisi"** rolüne evrilmesi için gereken tüm görevleri, stratejik öncelik sırasına göre listeler.
 
 ---
 
-### **FAZ 1: Stabilizasyon ve Çekirdek Orkestrasyon (Tamamlandı)**
+### **FAZ 1: Stabil ve Fonksiyonel Omurga (Tamamlandı)**
 
-**Amaç:** Platformun temel çağrı kurulum/sonlandırma yeteneklerini sağlamlaştırmak, dayanıklı hale getirmek ve gözlemlenebilirlik standartlarına uydurmak.
+**Amaç:** Platformun temel çağrı kurulum/sonlandırma, kimlik doğrulama ve gözlemlenebilirlik yeteneklerini sağlamlaştırmak. Bu faz, platformun üzerine yeni özelliklerin inşa edileceği sağlam zemini oluşturmuştur.
 
 -   [x] **Görev ID: SIG-001 - Çekirdek `INVITE`/`BYE` Akışı**
-    -   **Açıklama:** Gelen `INVITE` isteklerini kabul edip `200 OK` ile yanıtlama ve `BYE` ile çağrıyı sonlandırma temel mantığı oluşturuldu.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-002 - Senkron Orkestrasyon Mantığı**
-    -   **Açıklama:** Bir `INVITE` geldiğinde `user-service`, `dialplan-service` ve `media-service`'e sıralı gRPC çağrıları yaparak çağrı kurulumunu koordine etme yeteneği eklendi.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-003 - Asenkron Olay Yayınlama**
-    -   **Açıklama:** `call.started` ve `call.ended` gibi kritik yaşam döngüsü olaylarını, platformun asenkron beyni olan `agent-service`'in tüketmesi için RabbitMQ'ya (Topic Exchange) yayınlama yeteneği eklendi.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-004 - Gözlemlenebilirlik Standardı Uyumu**
-    -   **Açıklama:** `tracing` yapılandırması, `OBSERVABILITY_STANDARD.md` ile tam uyumlu hale getirildi. Gereksiz `INFO` logları `DEBUG` seviyesine çekilerek logların okunabilirliği artırıldı.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-005 - Uzaktan Çağrı Sonlandırma**
-    -   **Açıklama:** `call.terminate.request` olaylarını dinleyerek, `agent-service` gibi diğer servislerden gelen komutlarla çağrıları proaktif olarak sonlandırma yeteneği eklendi.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-006 - Kodun Modülerleştirilmesi**
-    -   **Açıklama:** `src/main.rs` dosyası, sorumlulukların `sip`, `grpc`, `rabbitmq` gibi ayrı modüllere taşınmasıyla yeniden yapılandırıldı.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-007 - Yinelenen `INVITE` Yönetimi**
-    -   **Açıklama:** Aynı `Call-ID`'ye sahip yinelenen `INVITE` isteklerinin, platformda birden fazla çağrı süreci başlatmasını engelleyen bir kilit mekanizması eklendi.
     -   **Durum:** ✅ **Tamamlandı**
-
 -   [x] **Görev ID: SIG-008 - `REGISTER` Metodu ile Kimlik Doğrulama**
-    -   **Açıklama:** SIP istemcilerinin platforma kayıt (`REGISTER`) olmasını ve `user-service` üzerinden Digest Authentication ile kimlik doğrulaması yapmasını sağlayan mantık implemente edildi.
     -   **Durum:** ✅ **Tamamlandı**
 
 ---
 
-### **FAZ 2: Platform İçi İletişim (Peer-to-Peer) Yetenekleri (Sıradaki Öncelik)**
+### **FAZ 2: Hibrit Etkileşim ve Gelişmiş Yönlendirme (Mevcut Odak)**
 
-**Amaç:** Platformu, sadece dış hatlarla konuşan bir sistem olmaktan çıkarıp, kendi içindeki kayıtlı kullanıcıların birbirleriyle doğrudan iletişim kurabildiği tam teşekküllü bir SIP sunucusuna dönüştürmek.
+**Amaç:** Platformu, AI ve insan ajanların bir arada çalışabildiği hibrit bir sisteme dönüştürmek ve teknik gözlem yeteneklerini en üst düzeye çıkarmak. Bu faz, platformun "ürünleşmesi" için kritik öneme sahiptir.
+
+-   [ ] **Görev ID: SIG-012 - Çağrı Transferi (`REFER`)**
+    -   **Durum:** ⬜ **Planlandı (SIRADAKİ EN YÜKSEK ÖNCELİK)**
+    -   **Stratejik Önem:** Bu görev, AI'ın çağrıyı bir insana devredebilmesinin ("escape hatch") teknik temelidir. Bu olmadan, `web-agent-ui` gibi insan odaklı arayüzler işlevsiz kalır. Platformun hibrit bir yapıya kavuşması için **zorunludur**.
+    -   **Tahmini Süre:** ~2-3 gün
+    -   **Kabul Kriterleri:**
+        -   [ ] Aktif bir çağrı sırasında gelen `REFER` isteği doğru bir şekilde parse edilmeli.
+        -   [ ] `Refer-To` başlığındaki hedefe (örn: `sip:2001@sentiric.com`) yeni bir `INVITE` isteği gönderilerek "kör transfer" (blind transfer) başlatılmalı.
+        -   [ ] Transferin durumu (`100 Trying`, `200 OK`, `503 Service Unavailable` vb.) standartlara uygun `NOTIFY` mesajları ile `REFER`'ı başlatan tarafa bildirilmelidir.
+        -   [ ] **İlişkili Görev:** `agent-service`, "operatöre bağlan" niyeti algıladığında bu `REFER` mekanizmasını tetikleyecek mantığı içermelidir.
 
 -   [ ] **Görev ID: SIG-009 - P2P Çağrı Yönlendirme (SIP Proxy Mantığı)**
-    -   **Durum:** ⬜ **Planlandı**
-    -   **Açıklama:** `handle_invite` içinde `TODO` olarak işaretlenen, bir SIP kullanıcısından (`1001`) diğerine (`2001`) gelen çağrıları, `dialplan-service`'e gitmek yerine, hedef kullanıcının Redis'teki adresine doğrudan yönlendiren (proxy) mantığı implemente et.
+    -   **Durum:** ⬜ **Planlandı (İkinci Öncelik)**
+    -   **Stratejik Önem:** Platformun teknik yeterliliğini kanıtlar ve dahili test/gözlem yeteneklerini muazzam artırır. Geliştiricilerin ve ajanların, `media-service` ve `agent-service`'in canlı davranışını bir softphone aracılığıyla doğrudan test etmelerini sağlar.
+    -   **Tahmini Süre:** ~3-5 gün (SIP kütüphanesi kullanılmazsa)
     -   **Kabul Kriterleri:**
-        -   [ ] Aranan URI'nin bir telefon numarası mı yoksa bir SIP kullanıcısı mı olduğu doğru bir şekilde tespit edilmeli.
+        -   [ ] Aranan URI'nin bir telefon hattı mı (`90...`) yoksa bir SIP kullanıcısı mı olduğu tespit edilmeli.
+        -   [ ] SIP kullanıcısı hedefleniyorsa, `dialplan-service`'e gidilmemeli.
         -   [ ] Hedef kullanıcının kayıtlı `contact` adresi Redis'ten okunmalı.
-        -   [ ] Gelen `INVITE` paketi, `Request-URI` hedef kullanıcının `contact` adresi olacak şekilde modifiye edilmeli.
-        -   [ ] Yanıtların doğru yoldan geri dönebilmesi için `Via` ve `Record-Route` başlıkları standartlara uygun olarak yönetilmeli.
-        -   [ ] Uçtan uca test: Bir softphone'dan (`1001`) başka bir softphone'a (`2001`) yapılan arama başarıyla kurulmalı ve iki taraf arasında sesli iletişim sağlanmalıdır.
-
--   [ ] **Görev ID: SIG-010 - Kullanıcı Durum Yönetimi (Presence)**
-    -   **Durum:** ⬜ **Planlandı**
-    -   **Açıklama:** SIP istemcilerinden gelen `PUBLISH` isteklerini işleyerek kullanıcıların "online", "busy", "away" gibi durumlarını yönet ve `SUBSCRIBE`/`NOTIFY` ile bu bilgiyi diğer kullanıcılara ilet.
-    -   **Kabul Kriterleri:**
-        -   [ ] `handle_sip_request`, `PUBLISH` metodunu tanımalı ve işlemeli.
-        -   [ ] Kullanıcı durumları (presence state) Redis'te bir TTL ile saklanmalı.
-        -   [ ] Bir kullanıcı başka bir kullanıcının durumuna `SUBSCRIBE` olduğunda, durumu değiştiğinde `NOTIFY` mesajı gönderilmelidir.
-        -   [ ] **İlişkili Görev:** `sentiric-web-agent-ui`'da diğer ajanların durumunu (yeşil/kırmızı ışık) gösterecek altyapı bu mekanizmaya dayanacaktır.
+        -   [ ] Gelen `INVITE` paketi, `Request-URI` hedef kullanıcının `contact` adresi olacak şekilde modifiye edilmeli ve `Via`/`Record-Route` başlıkları güncellenerek hedefe gönderilmelidir.
+        -   [ ] Uçtan uca test: Bir softphone'dan (`1001`) diğerine (`2001`) yapılan arama başarıyla kurulmalı ve iki taraf arasında ses akışı sağlanmalıdır.
 
 ---
 
-### **FAZ 3: Gelişmiş Çağrı Kontrolü ve Dayanıklılık**
+### **FAZ 3: Protokol Uyumluluğu ve Dayanıklılık**
 
-**Amaç:** Platformun çağrı akışları üzerindeki kontrolünü artırmak ve daha karmaşık telekomünikasyon senaryolarını yönetebilmesini sağlamak.
+**Amaç:** Platformun standart SIP istemcileriyle tam uyumlu çalışmasını sağlamak ve beklenmedik senaryolara karşı daha dayanıklı hale getirmek.
 
 -   [ ] **Görev ID: SIG-011 - `CANCEL` Metodu Desteği**
     -   **Durum:** ⬜ **Planlandı**
-    -   **Açıklama:** Bir `INVITE` isteği gönderildikten sonra, ancak `200 OK` yanıtı alınmadan önce çağrının arayan tarafından iptal edilmesini sağlayan `CANCEL` isteğini doğru bir şekilde işle.
+    -   **Stratejik Önem:** Çağrı kurulum sürecini daha sağlam hale getirir ve kaynakların (özellikle `media-service` portları) gereksiz yere meşgul edilmesini önler. Protokol uyumluluğu için önemlidir.
+    -   **Tahmini Süre:** ~1-2 gün
     -   **Kabul Kriterleri:**
-        -   [ ] `CANCEL` isteği alındığında, ilgili `INVITE` işlemi (gRPC çağrıları vb.) durdurulmalı.
-        -   [ ] `media-service`'ten tahsis edilen port varsa derhal serbest bırakılmalı.
-        -   [ ] Hem `CANCEL`'a hem de orijinal `INVITE`'a standartlara uygun yanıtlar (`200 OK` ve `487 Request Terminated`) gönderilmelidir.
+        -   [ ] `INVITE` gönderildikten, ancak `200 OK` alınmadan önce gelen bir `CANCEL` isteği, ilgili çağrı kurulum sürecini (tüm gRPC çağrıları dahil) iptal etmelidir.
+        -   [ ] Eğer `media-service`'ten port tahsis edildiyse, derhal `ReleasePort` komutuyla iade edilmelidir.
+        -   [ ] Hem orijinal `INVITE`'a (`487 Request Terminated`) hem de `CANCEL`'a (`200 OK`) standartlara uygun yanıtlar gönderilmelidir.
 
--   [ ] **Görev ID: SIG-012 - Temel Çağrı Transferi (`REFER`)**
+-   [ ] **Görev ID: SIG-010 - Kullanıcı Durum Yönetimi (Presence)**
     -   **Durum:** ⬜ **Planlandı**
-    -   **Açıklama:** Aktif bir çağrıyı başka bir SIP kullanıcısına veya harici bir numaraya yönlendirmeyi sağlayan `REFER` metodunu implemente et.
+    -   **Stratejik Önem:** `web-agent-ui`'da hangi ajanların müsait, meşgul veya çevrimdışı olduğunu göstermenin temelini oluşturur. Bu, akıllı çağrı yönlendirme (müsait ajana aktarma) için bir ön koşuldur.
+    -   **Tahmini Süre:** ~2-3 gün
     -   **Kabul Kriterleri:**
-        -   [ ] Çağrı sırasında `REFER` isteği alındığında, transfer hedefi parse edilmeli.
-        -   [ ] Platform, hedefe yeni bir `INVITE` göndererek transferi başlatmalı.
-        -   [ ] Transferin durumu (`100 Trying`, `200 OK`) `NOTIFY` mesajları ile `REFER`'ı başlatan tarafa bildirilmelidir.
-        -   **İlişkili Görev:** Bu, `agent-service`'in bir çağrıyı insan bir operatöre ("kör transfer") devretmesinin temelini oluşturur.
-
--   [ ] **Görev ID: SIG-013 - Gelişmiş Kimlik Doğrulama Mantığı**
-    -   **Durum:** ⬜ **Planlandı**
-    -   **Açıklama:** `user-service` ile olan kimlik doğrulama akışını, HA1 hash hesaplama sorumluluğunu tamamen `user-service`'e devredecek şekilde yeniden yapılandır.
-    -   **Bağımlılık:** `sentiric-user-service`'de `VerifySipPassword(username, realm, nonce, response)` gibi yeni bir RPC'nin oluşturulmasını gerektirir (`USER-007`).
-    -   **Kabul Kriterleri:**
-        -   [ ] `sip-signaling-service` artık MD5 hesaplaması yapmamalı.
-        -   [ ] `REGISTER` isteğindeki `Authorization` başlığının içeriği, olduğu gibi yeni `user-service` RPC'sine gönderilmeli.
-        -   [ ] `user-service`'den gelen `true/false` yanıtına göre kayıt işlemi devam etmeli veya reddedilmeli.
+        -   [ ] `PUBLISH` metodu işlenerek kullanıcı durumları (online, busy vb.) alınmalı ve Redis'te saklanmalı.
+        -   [ ] `SUBSCRIBE` metodu ile bir kullanıcının başka bir kullanıcının durumunu takip etme talebi yönetilmeli.
+        -   [ ] Durum değişikliği olduğunda, abone olan kullanıcılara `NOTIFY` mesajı ile bildirim gönderilmeli.
 
 ---
 
-Bu yol haritası, `sip-signaling-service`'in mevcut stabil durumundan, tam teşekküllü ve akıllı bir SIP iletişim merkezine nasıl evrileceğini net bir şekilde tanımlar.
+### **FAZ 4: Uzun Vadeli İyileştirmeler ve Teknik Borç Ödemesi**
 
+**Amaç:** Platformun güvenliğini, bakımını ve ölçeklenebilirliğini en üst düzeye çıkarmak.
+
+-   [ ] **Görev ID: SIG-013 - Gelişmiş Kimlik Doğrulama Mantığı**
+    -   **Durum:** ⬜ **Planlandı**
+    -   **Stratejik Önem:** Güvenlik ve kimlik doğrulama mantığını tek bir sorumlu serviste (`user-service`) merkezileştirerek "Tek Sorumluluk Prensibi"ni güçlendirir ve bakımı kolaylaştırır.
+    -   **Bağımlılık:** `sentiric-user-service`'de yeni bir `VerifySipPassword` RPC'sinin oluşturulmasını gerektirir (`USER-007`).
+    -   **Tahmini Süre:** ~1 gün (bağımlılık tamamlandıktan sonra)
+    -   **Kabul Kriterleri:**
+        -   [ ] `sip-signaling-service` artık MD5 hash hesaplaması yapmamalı.
+        -   [ ] `REGISTER` isteğindeki `Authorization` başlığının içeriği, yeni `user-service` RPC'sine gönderilmeli ve dönen `true/false` yanıtına göre işlem yapılmalıdır.
