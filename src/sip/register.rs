@@ -4,7 +4,6 @@ use crate::config::AppConfig;
 use crate::grpc::client::create_secure_grpc_channel;
 use crate::redis::{self, AsyncCommands};
 use crate::sip::utils::{create_response, parse_complex_headers};
-use lazy_static::lazy_static;
 use md5::compute;
 use rand::distributions::{Alphanumeric, DistString};
 use sentiric_contracts::sentiric::user::v1::{
@@ -14,16 +13,11 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex; // <-- TOKIO'NUN MUTEX'İNİ KULLANIYORUZ
 use tonic::Request as TonicRequest;
 use tracing::{error, info, instrument, warn, Span};
 
-// Tokio'nun asenkron Mutex'i ile lazy_static kullanıyoruz.
-lazy_static! {
-    static ref PENDING_REGISTRATIONS: Arc<Mutex<HashMap<String, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
-}
+// PENDING_REGISTRATIONS'ı buradan kaldırın.
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id))]
 pub async fn handle_register(
@@ -40,15 +34,17 @@ pub async fn handle_register(
     if let Some(auth_header) = headers.get("Authorization") {
         verify_authentication(auth_header, &headers, sock, addr, config, redis_client).await
     } else {
-        // Tokio Mutex'i asenkron olduğu için .lock() çağrısına .await ekliyoruz.
-        let mut pending = PENDING_REGISTRATIONS.lock().await;
-        if let Some(instant) = pending.get(&call_id) {
-            if instant.elapsed() < Duration::from_secs(10) {
-                warn!("Kısa süre içinde aynı Call-ID ile tekrar REGISTER isteği alındı, görmezden geliniyor.");
-                return Ok(());
-            }
+        let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let key = format!("pending_reg:{}", call_id);
+        let exists: bool = conn.exists(&key).await?;
+
+        if exists {
+            warn!("Kısa süre içinde aynı Call-ID ile tekrar REGISTER isteği alındı, görmezden geliniyor.");
+            return Ok(());
         }
-        pending.insert(call_id.clone(), Instant::now());
+
+        // 10 saniyelik bir TTL ile anahtarı Redis'e set et
+        let _: () = conn.set_ex(&key, true, 10).await?;
         challenge_client(&headers, sock, addr, config).await
     }
 }
@@ -74,6 +70,7 @@ async fn challenge_client(
     sock.send_to(response.as_bytes(), addr).await?;
     Ok(())
 }
+
 
 async fn verify_authentication(
     auth_header: &str,
@@ -103,8 +100,11 @@ async fn verify_authentication(
 
     let user_channel = create_secure_grpc_channel(&config.user_service_url, "user-service").await?;
     let mut user_client = UserServiceClient::new(user_channel);
+    
+    // GÜNCELLENDİ: Artık 'realm' alanı ile istek atıyoruz.
     let creds_res = user_client.get_sip_credentials(TonicRequest::new(GetSipCredentialsRequest {
         sip_username: username.to_string(),
+        realm: realm.to_string(),
     })).await;
 
     if let Err(e) = creds_res {
@@ -129,6 +129,12 @@ async fn verify_authentication(
 
     if *client_response == expected_response {
         info!("Kimlik doğrulama başarılı. Kullanıcı kaydediliyor.");
+        
+        let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
+        let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let key = format!("pending_reg:{}", call_id);
+        let _: () = conn.del(key).await?;
+
         let contact_uri = headers.get("Contact").cloned().unwrap_or_default();
         let expires = headers.get("Expires").and_then(|e| e.parse::<u64>().ok()).unwrap_or(3600);
 
