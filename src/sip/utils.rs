@@ -1,11 +1,16 @@
-// ========== FILE: src/sip/utils.rs ==========
+// File: sentiric-sip-signaling-service/src/sip/utils.rs
+
 use crate::config::AppConfig;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use tracing::{info, warn};
+use rand::Rng;
 
+// --- EKSİK OLAN KISIM BURASIYDI ---
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
+// --- DÜZELTME SONU ---
 
 pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut headers = HashMap::new();
@@ -46,10 +51,25 @@ pub fn create_response(
     headers: &HashMap<String, String>,
     sdp: Option<&str>,
     config: &AppConfig,
+    remote_addr: SocketAddr,
 ) -> String {
     let body = sdp.unwrap_or("");
-    let via_lines = headers.get("Via").map_or(String::new(), |v| format!("Via: {}\r\n", v));
     let empty_string = String::new();
+    
+    let mut via = headers.get("Via").cloned().unwrap_or_default();
+    if via.contains(";rport") && !via.contains(";received=") {
+        via = format!("{};received={}", via, remote_addr.ip());
+    }
+    let via_line = format!("Via: {}\r\n", via);
+
+    let from_header = headers.get("From").unwrap_or(&empty_string);
+    let mut to_header = headers.get("To").unwrap_or(&empty_string).clone();
+
+    if !to_header.contains(";tag=") {
+        let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
+        to_header.push_str(&to_tag);
+    }
+
     let contact_header = format!(
         "<sip:{}@{}:{}>",
         "sentiric-signal",
@@ -57,28 +77,42 @@ pub fn create_response(
         config.sip_listen_addr.port()
     );
 
-    format!(
+    let www_authenticate_line = headers.get("WWW-Authenticate")
+        .map(|val| format!("WWW-Authenticate: {}\r\n", val))
+        .unwrap_or_default();
+
+    let response_string = format!(
         "SIP/2.0 {}\r\n{}\
         From: {}\r\n\
         To: {}\r\n\
         Call-ID: {}\r\n\
         CSeq: {}\r\n\
+        {}\
         Contact: {}\r\n\
-        Server: Sentiric Signaling Service\r\n\
+        Server: Sentiric Signaling Service v1.0\r\n\
         Content-Length: {}\r\n\
         {}\r\n\
         {}",
         status_line,
-        via_lines,
-        headers.get("From").unwrap_or(&empty_string),
-        headers.get("To").unwrap_or(&empty_string),
+        via_line,
+        from_header,
+        to_header,
         headers.get("Call-ID").unwrap_or(&empty_string),
         headers.get("CSeq").unwrap_or(&empty_string),
+        www_authenticate_line,
         contact_header,
         body.len(),
         if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" },
         body
-    )
+    );
+
+    info!(
+        response_to = %remote_addr,
+        response_body = %response_string.replace("\r\n", "\\r\\n"),
+        "SIP yanıtı gönderiliyor."
+    );
+
+    response_string
 }
 
 pub fn create_bye_request(headers: &HashMap<String, String>) -> String {

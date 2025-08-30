@@ -34,7 +34,6 @@ pub async fn handle_invite(
     let mut headers = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
 
-    // --- Yinelenen INVITE Kontrolü ---
     if active_calls.lock().await.contains_key(&call_id) {
         warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı, görmezden geliniyor.");
         return Ok(());
@@ -56,7 +55,7 @@ pub async fn handle_invite(
     Span::current().record("destination", &destination_number as &str);
 
     sock.send_to(
-        create_response("100 Trying", &headers, None, &config).as_bytes(),
+        create_response("100 Trying", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #1
         addr,
     )
     .await?;
@@ -76,9 +75,9 @@ pub async fn handle_invite(
         .await;
 
     if let Err(e) = dialplan_result {
-        error!(error = %e, "Dialplan'den karar alınamadı. Acil durum akışı desteklenmiyor.");
+        error!(error = %e, "Dialplan'den karar alınamadı.");
         sock.send_to(
-            create_response("503 Service Unavailable", &headers, None, &config).as_bytes(),
+            create_response("503 Service Unavailable", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #2
             addr,
         )
         .await?;
@@ -104,7 +103,7 @@ pub async fn handle_invite(
         Err(e) => {
             error!(error = %e, "Media service'ten port alınamadı.");
             sock.send_to(
-                create_response("503 Service Unavailable", &headers, None, &config).as_bytes(),
+                create_response("503 Service Unavailable", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #3
                 addr,
             )
             .await?;
@@ -113,8 +112,7 @@ pub async fn handle_invite(
     };
 
     info!(rtp_port, "Medya portu ayrıldı.");
-
-    // --- DÜZELTME: ActiveCallInfo oluşturma bloğu, rtp_port tanımlandıktan SONRA olmalı ---
+    
     let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
     headers
         .entry("To".to_string())
@@ -122,13 +120,12 @@ pub async fn handle_invite(
     
     let call_info = ActiveCallInfo {
         remote_addr: addr,
-        rtp_port, // Artık bu değişken tanımlı ve scope içinde
+        rtp_port,
         trace_id: trace_id.clone(),
         created_at: std::time::Instant::now(),
         headers: headers.clone(),
     };
     active_calls.lock().await.insert(call_id.clone(), call_info);
-    // --- DÜZELTME SONU ---
 
     let sdp_body = format!(
         "v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
@@ -138,12 +135,12 @@ pub async fn handle_invite(
     );
 
     sock.send_to(
-        create_response("180 Ringing", &headers, None, &config).as_bytes(),
+        create_response("180 Ringing", &headers, None, &config, addr).as_bytes(), // <-- DÜZELTME #4
         addr,
     )
     .await?;
     sleep(std::time::Duration::from_millis(100)).await;
-    let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config);
+    let ok_response = create_response("200 OK", &headers, Some(&sdp_body), &config, addr); // <-- DÜZELTME #5
     sock.send_to(ok_response.as_bytes(), addr).await?;
 
     info!("Çağrı başarıyla yanıtlandı (200 OK gönderildi).");

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full", "sync"] }
 tonic = { version = "0.11", features = ["tls", "tls-roots"] }
 lapin = "2.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -21,7 +21,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prost = "0.12"
 rand_distr = "0.4.3"
 futures-util = "0.3"
-redis = { version = "0.25", features = ["tokio-comp"] } # <-- YENİ SATIR
+redis = { version = "0.25", features = ["tokio-comp"] }
+lazy_static = "1.4.0" # Bu satırın eklendiğinden emin ol
+md5 = "0.8.0" # <-- YENİ SATIR
 
 # YENİ KONTRAK VERSİYONU
 [dependencies.sentiric-contracts]

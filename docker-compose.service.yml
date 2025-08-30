@@ -90,7 +90,7 @@ services:
       - "${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"
     ports: 
       - "${MEDIA_SERVICE_PORT}:${MEDIA_SERVICE_PORT}"
-      - "${MEDIA_SERVICE_METRICS_PORT}:${MEDIA_SERVICE_METRICS_PORT}"      
+      # - "${MEDIA_SERVICE_METRICS_PORT}:${MEDIA_SERVICE_METRICS_PORT}"      
       - "${MEDIA_SERVICE_GRPC_PORT}:${MEDIA_SERVICE_GRPC_PORT}"
       - "${RTP_SERVICE_PORT_MIN}-${RTP_SERVICE_PORT_MAX}:${RTP_SERVICE_PORT_MIN}-${RTP_SERVICE_PORT_MAX}/udp"
     networks: [sentiric-net]
@@ -106,6 +106,7 @@ services:
     build: { context: ../sentiric-sip-signaling-service }
     env_file: ["${ENV_FILE_PATH}"]
     volumes: ["${CONFIG_REPO_PATH}/tls/certs:/etc/sentiric/tls:ro"]
+    ports: ["${SIP_SIGNALING_SERVICE_PORT:-5060}:${SIP_SIGNALING_SERVICE_PORT:-5060}/udp"]
     networks: [sentiric-net]
     restart: always
     depends_on: { 

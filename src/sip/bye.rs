@@ -24,7 +24,10 @@ pub async fn handle_bye(
         Span::current().record("call_id", &call_id as &str);
         info!("BYE isteği alındı.");
 
-        let ok_response = create_response("200 OK", &headers, None, &config);
+        // --- DÜZELTME BURADA ---
+        let ok_response = create_response("200 OK", &headers, None, &config, addr);
+        // --- DÜZELTME SONU ---
+        
         sock.send_to(ok_response.as_bytes(), addr).await?;
         info!("BYE isteğine 200 OK yanıtı gönderildi.");
 
@@ -42,7 +45,7 @@ pub async fn handle_bye(
             rabbit_channel
                 .basic_publish(
                     RABBITMQ_EXCHANGE_NAME,
-                    "call.ended", // <<< DEĞİŞİKLİK BURADA
+                    "call.ended",
                     BasicPublishOptions::default(),
                     event_payload.to_string().as_bytes(),
                     BasicProperties::default().with_delivery_mode(2),
