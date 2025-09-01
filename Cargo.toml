@@ -24,16 +24,10 @@ futures-util = "0.3"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
 
-# --- GÜNCEL VE UYUMLU REDIS ÇÖZÜMÜ ---
-redis = { version = "0.32", features = ["tokio-comp"] }
-# veya daha güncel alternatif:
-# redis = { version = "0.32", features = ["tokio-comp", "tls-rustls"] }
-
-# Redis için gerekli TLS kütüphaneleri (uyumlu sürümler)
-tokio-rustls = "0.26"
-rustls = { version = "0.22", features = ["tls12"] }
-rustls-pemfile = "2.0"
-webpki-roots = "0.26"
+# --- DOKÜMANTASYONA DAYALI NİHAİ ÇÖZÜM ---
+# Tokio ile birlikte Rustls tabanlı TLS desteğini etkinleştirmek için gereken
+# tek ve doğru birleşik özellik `tokio-rustls-comp`'tur.
+redis = { version = "0.32", features = ["tokio-rustls-comp"] }
 
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
