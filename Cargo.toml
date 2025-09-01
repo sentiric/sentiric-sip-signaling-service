@@ -21,11 +21,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prost = "0.12"
 rand_distr = "0.4.3"
 futures-util = "0.3"
-redis = { version = "0.25", features = ["tokio-comp"] }
-lazy_static = "1.4.0" # Bu satırın eklendiğinden emin ol
-md5 = "0.8.0" # <-- YENİ SATIR
+lazy_static = "1.4.0"
+md5 = "0.8.0"
 
-# YENİ KONTRAK VERSİYONU
+# --- GÜNCEL VE UYUMLU REDIS ÇÖZÜMÜ ---
+redis = { version = "0.32", features = ["tokio-comp"] }
+# veya daha güncel alternatif:
+# redis = { version = "0.32", features = ["tokio-comp", "tls-rustls"] }
+
+# Redis için gerekli TLS kütüphaneleri (uyumlu sürümler)
+tokio-rustls = "0.26"
+rustls = { version = "0.22", features = ["tls12"] }
+rustls-pemfile = "2.0"
+webpki-roots = "0.26"
+
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
 tag = "v1.8.6"

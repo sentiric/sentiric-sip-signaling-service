@@ -39,11 +39,24 @@ impl AppConfig {
         let sip_port_str = env::var("SIP_SIGNALING_SERVICE_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
 
+        // --- YENİ VE DÜZELTİLMİŞ REDIS MANTIĞI ---
+        let redis_use_ssl_str = env::var("REDIS_USE_SSL").unwrap_or_else(|_| "false".to_string());
+        let redis_use_ssl = redis_use_ssl_str.parse::<bool>().unwrap_or(false);
+        let redis_url_from_env = env::var("REDIS_URL")?;
+        
+        let redis_url = if redis_use_ssl && redis_url_from_env.starts_with("redis://") {
+            // URL 'redis://' ile başlıyorsa ve SSL kullanılacaksa, 'rediss://' olarak değiştir.
+            redis_url_from_env.replacen("redis://", "rediss://", 1)
+        } else {
+            redis_url_from_env
+        };
+        // --- DÜZELTME SONU ---
+
         Ok(AppConfig {
             sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
             sip_public_ip: env::var("PUBLIC_IP")?,
             rabbitmq_url: env::var("RABBITMQ_URL")?,
-            redis_url: env::var("REDIS_URL")?, // <-- YENİ SATIR
+            redis_url, // <-- DİNAMİK OLARAK OLUŞTURULAN DEĞİŞKENİ KULLAN
             media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
             user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
             dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
