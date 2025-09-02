@@ -24,6 +24,7 @@ use tonic::Request as TonicRequest;
 // DÜZELTME 2: `debug` makrosunu buraya da import ediyoruz.
 use tracing::{debug, error, info, instrument, warn, Span};
 
+
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id, caller, destination))]
 pub async fn handle_invite(
     request_str: &str,
@@ -200,6 +201,27 @@ pub async fn handle_invite(
         .await?
         .await?;
     info!("'call.started' olayı yayınlandı.");
+
+
+    // --- YENİ (SIG-FEAT-01): 'call.answered' olayını yayınla ---
+    let answered_event_payload = serde_json::json!({
+        "eventType": "call.answered",
+        "traceId": trace_id,
+        "callId": call_id,
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+    let _ = rabbit_channel
+        .basic_publish(
+            RABBITMQ_EXCHANGE_NAME,
+            "call.answered", // Yeni routing key
+            BasicPublishOptions::default(),
+            answered_event_payload.to_string().as_bytes(),
+            BasicProperties::default().with_delivery_mode(2),
+        )
+        .await?
+        .await?;
+    info!("'call.answered' olayı yayınlandı.");
+    // --- YENİ (SIG-FEAT-01) SONU ---
 
     Ok(())
 }
