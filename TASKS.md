@@ -31,27 +31,32 @@ Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Sen
 
 ### **FAZ 2: Hibrit Etkileşim ve Gelişmiş Yönlendirme (Mevcut Odak)**
 
-**Amaç:** Platformu, AI ve insan ajanların bir arada çalışabildiği hibrit bir sisteme dönüştürmek ve teknik gözlem yeteneklerini en üst düzeye çıkarmak. Bu faz, platformun "ürünleşmesi" için kritik öneme sahiptir.
+-   **Görev ID: SIG-BUG-01 - Çağrı Sonlandırma (`BYE`) Akışını Sağlamlaştırma**
+    -   **Durum:** ⬜ **Yapılacak**
+    -   **Öncelik:** **KRİTİK**
+    -   **Stratejik Önem:** Bu hata, çağrıların gereksiz yere uzun süre açık kalmasına, yanlış faturalandırmaya (süre hesaplama) ve kötü bir kullanıcı deneyimine neden olmaktadır. Platformun temel güvenilirliğini doğrudan etkiler.
+    -   **Problem Tanımı:** Test çağrısı 1.5 dakika boyunca açık kalmış ve manuel kapatılmıştır. Loglar, `agent-service`'in sonlandırma isteğini gönderdiğini, `sip-signaling`'in bir `BYE` gönderdiğini ancak telekom operatörünün bunu almadığı için sürekli yeni `BYE` istekleri gönderdiğini göstermektedir.
+    -   **Çözüm Stratejisi:** Sorun, `sip-gateway`'in gelen `INVITE` paketindeki `Via` ve `Record-Route` başlıklarını, `BYE` gibi daha sonraki isteklerin doğru rotayı takip edebileceği şekilde modifiye etmemesinden kaynaklanmaktadır. Gateway, bir Session Border Controller (SBC) gibi davranarak bu başlıkları kendi adresiyle güncellemeli ve çağrı boyunca durumu korumalıdır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `agent-service`, çağrıyı sonlandırma komutunu verdikten sonra, kullanıcının softphone'u veya telefon hattı **5 saniye içinde otomatik olarak kapanmalıdır.**
+        -   [ ] `sip-signaling` loglarında artık tekrarlayan "BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı" uyarısı görülmemelidir.
+    -   **Tahmini Süre:** ~2-3 Gün
 
--   [ ] **Görev ID:** `SIG-BUG-01`
-    *   **Açıklama:** `agent-service`'ten gelen sonlandırma isteği üzerine `sip-signaling` tarafından gönderilen `BYE` paketinin neden istemci tarafından işlenmediğini araştır ve düzelt. Bu, `Via`, `Route`, `Record-Route` başlıklarının doğru yönetilmesini gerektirebilir.
-    *   **Kabul Kriterleri:**
-        *   [ ] Sistem "Çağrıyı sonlandırıyorum" anonsunu çaldıktan sonra, softphone'un çağrıyı **otomatik olarak kapatması** gerekir.
+-   **Görev ID: SIG-FEAT-01 - `call.answered` Olayını Yayınlama**
+    -   **Durum:** ⬜ **Yapılacak**
+    -   **Öncelik:** YÜKSEK
+    -   **Stratejik Önem:** Doğru çağrı süresi ve maliyet hesaplaması için temel veriyi sağlar. Raporlama doğruluğu için zorunludur.
+    -   **Bağımlılıklar:** `CDR-FEAT-01`
+    -   **Çözüm Stratejisi:** `sip/invite.rs` içinde, istemciye `200 OK` yanıtı başarıyla gönderildikten hemen sonra, `RabbitMQ`'ya `call.answered` tipinde yeni bir olay yayınlanmalıdır. Bu olay `call_id`, `trace_id` ve `timestamp` içermelidir.
+    -   **Kabul Kriterleri:**
+        -   [ ] Bir çağrı cevaplandığında, RabbitMQ'da `call.answered` olayı görülmelidir.
+        -   [ ] `cdr-service` bu olayı işleyerek `calls` tablosundaki `answer_time` sütununu doldurmalıdır.
+    -   **Tahmini Süre:** ~3-4 Saat
 
 -   [ ] **Görev ID:** `AGENT-BUG-05`
     *   **Açıklama:** `call.terminate.request` olayı yayınlanırken, JSON payload'una `eventType: "call.terminate.request"` alanının eklenmesini sağla.
     *   **Kabul Kriterleri:**
         *   [ ] `call_events` tablosunda artık `event_type` alanı boş olan kayıtlar görülmemelidir.
-
--   [ ] **Görev ID: SIG-012 - Çağrı Transferi (`REFER`)**
-    -   **Durum:** ⬜ **Planlandı (SIRADAKİ EN YÜKSEK ÖNCELİK)**
-    -   **Stratejik Önem:** Bu görev, AI'ın çağrıyı bir insana devredebilmesinin ("escape hatch") teknik temelidir. Bu olmadan, `web-agent-ui` gibi insan odaklı arayüzler işlevsiz kalır. Platformun hibrit bir yapıya kavuşması için **zorunludur**.
-    -   **Tahmini Süre:** ~2-3 gün
-    -   **Kabul Kriterleri:**
-        -   [ ] Aktif bir çağrı sırasında gelen `REFER` isteği doğru bir şekilde parse edilmeli.
-        -   [ ] `Refer-To` başlığındaki hedefe (örn: `sip:2001@sentiric.com`) yeni bir `INVITE` isteği gönderilerek "kör transfer" (blind transfer) başlatılmalı.
-        -   [ ] Transferin durumu (`100 Trying`, `200 OK`, `503 Service Unavailable` vb.) standartlara uygun `NOTIFY` mesajları ile `REFER`'ı başlatan tarafa bildirilmelidir.
-        -   [ ] **İlişkili Görev:** `agent-service`, "operatöre bağlan" niyeti algıladığında bu `REFER` mekanizmasını tetikleyecek mantığı içermelidir.
 
 -   [ ] **Görev ID: SIG-009 - P2P Çağrı Yönlendirme (SIP Proxy Mantığı)**
     -   **Durum:** ⬜ **Planlandı (İkinci Öncelik)**
@@ -67,6 +72,18 @@ Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Sen
 ---
 
 ### **FAZ 3: Protokol Uyumluluğu ve Dayanıklılık**
+
+
+-   [ ] **Görev ID: SIG-012 - Çağrı Transferi (`REFER`)**
+    -   **Durum:** ⬜ **Planlandı (SIRADAKİ EN YÜKSEK ÖNCELİK)**
+    -   **Stratejik Önem:** Bu görev, AI'ın çağrıyı bir insana devredebilmesinin ("escape hatch") teknik temelidir. Bu olmadan, `web-agent-ui` gibi insan odaklı arayüzler işlevsiz kalır. Platformun hibrit bir yapıya kavuşması için **zorunludur**.
+    -   **Tahmini Süre:** ~2-3 gün
+    -   **Kabul Kriterleri:**
+        -   [ ] Aktif bir çağrı sırasında gelen `REFER` isteği doğru bir şekilde parse edilmeli.
+        -   [ ] `Refer-To` başlığındaki hedefe (örn: `sip:2001@sentiric.com`) yeni bir `INVITE` isteği gönderilerek "kör transfer" (blind transfer) başlatılmalı.
+        -   [ ] Transferin durumu (`100 Trying`, `200 OK`, `503 Service Unavailable` vb.) standartlara uygun `NOTIFY` mesajları ile `REFER`'ı başlatan tarafa bildirilmelidir.
+        -   [ ] **İlişkili Görev:** `agent-service`, "operatöre bağlan" niyeti algıladığında bu `REFER` mekanizmasını tetikleyecek mantığı içermelidir.
+
 
 -   [ ] **Görev ID: SIG-BUG-01 - Çağrı Sonlandırma (`BYE`) Akışını Sağlamlaştırma (YÜKSEK ÖNCELİK)**
     -   **Durum:** ⬜ Planlandı
