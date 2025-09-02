@@ -1,8 +1,6 @@
-### **`sentiric-sip-signaling-service/TASKS.md` (Stratejik Revizyon v5.1)**
+# 🚦 SIP Servisleri - Görev Listesi
 
-# 🚦 Sentiric SIP Signaling Service - Geliştirme Yol Haritası (v5.1)
-
-Bu belge, `sip-signaling-service`'in, Sentiric Anayasası'nda tanımlanan **"Senkron Çağrı Kurulum Orkestratörü"** rolünden, tam teşekküllü bir **"İletişim Yönlendiricisi"** rolüne evrilmesi için gereken tüm görevleri, stratejik öncelik sırasına göre listeler.
+Bu belge, `sip-signaling` ve `sip-gateway` servislerinin ortak sorumluluğu olan kritik çağrı kontrol hatalarını gidermek için gereken görevleri tanımlar.
 
 ---
 
