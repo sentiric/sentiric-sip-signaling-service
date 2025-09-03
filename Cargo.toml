@@ -31,4 +31,4 @@ redis = { version = "0.32", features = ["tokio-rustls-comp"] }
 
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
-tag = "v1.8.6"
+tag = "v1.8.8"
