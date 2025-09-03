@@ -1,4 +1,4 @@
-// File: src/sip/invite.rs (TAM VE GÜNCELLENMİŞ HALİ)
+// File: src/sip/invite.rs (TAM VE DÜZELTİLMİŞ HALİ)
 
 use super::utils::{
     create_response, extract_sdp_media_info, extract_user_from_uri, parse_complex_headers,
@@ -6,7 +6,7 @@ use super::utils::{
 use crate::config::AppConfig;
 use crate::grpc::client::create_secure_grpc_channel;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
-use crate::redis::{self, AsyncCommands};
+use crate::redis::{self, AsyncCommands}; // AsyncCommands'i import ettiğimizden emin olalım
 use crate::state::{ActiveCallInfo, ActiveCalls};
 use lapin::{options::*, BasicProperties, Channel as LapinChannel};
 use rand::distributions::{Alphanumeric, DistString};
@@ -36,18 +36,26 @@ pub async fn handle_invite(
     let mut headers = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
 
-    // --- YENİ: Yinelenen INVITE kontrolü ---
+    // --- YENİ ve GÜÇLENDİRİLMİŞ YARIŞ DURUMU KONTROLÜ ---
     let mut conn = redis_client.get_multiplexed_async_connection().await?;
     let invite_lock_key = format!("processed_invites:{}", call_id);
-    let already_processed: bool = conn.exists(&invite_lock_key).await?;
-    if already_processed {
-        warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı (Redis kilidi), görmezden geliniyor.");
+    
+    // SETNX komutunu kullanarak atomik bir şekilde kilidi ayarlamaya çalış.
+    // Başarılı olursa `true` (kilit yeni oluşturuldu), başarısız olursa `false` döner.
+    let is_first_invite: bool = conn.set_nx(&invite_lock_key, true).await?;
+
+    if !is_first_invite {
+        warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı (Redis atomik kilit), görmezden geliniyor.");
         return Ok(());
     }
-    // --- YENİ SONU ---
+    
+    // Kilidi 30 saniye sonra otomatik olarak silinmesi için ayarla.
+    let _: () = conn.expire(&invite_lock_key, 30).await?;
+    // --- YENİ KONTROL SONU ---
 
+    // Hafızadaki aktif çağrı kontrolü hala bir güvenlik katmanı olarak kalabilir.
     if active_calls.lock().await.contains_key(&call_id) {
-        warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı (aktif çağrı), görmezden geliniyor.");
+        warn!(call_id = %call_id, "Yinelenen INVITE isteği (aktif çağrı), görmezden geliniyor.");
         return Ok(());
     }
 
@@ -69,7 +77,6 @@ pub async fn handle_invite(
     if !destination_number.starts_with("90") {
         info!(destination_user = %destination_number, "Kullanıcıdan kullanıcıya arama tespit edildi. Redis'ten adres sorgulanıyor...");
 
-        let mut conn = redis_client.get_multiplexed_async_connection().await?;
         let aor = format!("sip_registration:sip:{}@{}", destination_number, config.sip_realm);
         let target_contact_uri: Option<String> = conn.get(aor).await?;
 
@@ -185,10 +192,6 @@ pub async fn handle_invite(
 
     info!("Çağrı başarıyla yanıtlandı (200 OK gönderildi).");
     
-    // --- YENİ: Başarılı yanıttan sonra Redis kilidini koy ---
-    let _: () = conn.set_ex(&invite_lock_key, true, 30).await?;
-    // --- YENİ SONU ---
-
     let event_payload = serde_json::json!({
         "eventType": "call.started", "traceId": trace_id, "callId": call_id, "from": from_uri, "to": to_uri,
         "media": { "server_rtp_port": rtp_port, "caller_rtp_addr": extract_sdp_media_info(request_str).unwrap_or_default() },
