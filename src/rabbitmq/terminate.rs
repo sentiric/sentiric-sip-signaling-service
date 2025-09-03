@@ -1,4 +1,4 @@
-// File: sentiric-sip-signaling-service/src/rabbitmq/terminate.rs
+// File: src/rabbitmq/terminate.rs (TAM VE GÜNCELLENMİŞ HALİ)
 
 use super::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::utils::create_bye_request;
@@ -80,11 +80,12 @@ pub async fn listen_for_termination_requests(
                 let call_id = req.call_id;
                 info!(call_id = %call_id, "Çağrı sonlandırma isteği alındı.");
 
+                // --- DEĞİŞİKLİK BURADA: remove() kullanarak kaydı hem al hem de atomik olarak sil ---
                 if let Some(call_info) = active_calls.lock().await.remove(&call_id) {
                     let span = tracing::info_span!("terminate_call", call_id = %call_id, trace_id = %call_info.trace_id, remote_addr = %call_info.remote_addr);
                     let _enter = span.enter();
 
-                    info!("Aktif çağrı bulundu, BYE paketi gönderiliyor.");
+                    info!("Aktif çağrı bulundu ve listeden silindi, BYE paketi gönderiliyor.");
                     let bye_request = create_bye_request(&call_info.headers);
                     if let Err(e) = sock.send_to(bye_request.as_bytes(), call_info.remote_addr).await {
                         error!(error = %e, "BYE paketi gönderilemedi.");
@@ -92,6 +93,7 @@ pub async fn listen_for_termination_requests(
                         info!("BYE paketi başarıyla gönderildi.");
                     }
 
+                    // 'call.ended' olayını yayınlamaya devam et
                     let event_payload = serde_json::json!({
                         "eventType": "call.ended",
                         "traceId": call_info.trace_id,
@@ -102,7 +104,7 @@ pub async fn listen_for_termination_requests(
                     let _ = rabbit_channel
                         .basic_publish(
                             RABBITMQ_EXCHANGE_NAME,
-                            "call.ended", // <<< DEĞİŞİKLİK BURADA
+                            "call.ended",
                             BasicPublishOptions::default(),
                             event_payload.to_string().as_bytes(),
                             BasicProperties::default().with_delivery_mode(2),
@@ -110,7 +112,7 @@ pub async fn listen_for_termination_requests(
                         .await;
                     info!("'call.ended' olayı yayınlandı.");
                 } else {
-                    warn!(call_id = %call_id, "Sonlandırılmak istenen çağrı aktif değil.");
+                    warn!(call_id = %call_id, "Sonlandırılmak istenen çağrı aktif değil veya zaten sonlandırılmış.");
                 }
             } else {
                 error!("Geçersiz sonlandırma isteği formatı.");
