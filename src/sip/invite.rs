@@ -21,9 +21,7 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
 use tonic::Request as TonicRequest;
-// DÜZELTME 2: `debug` makrosunu buraya da import ediyoruz.
 use tracing::{debug, error, info, instrument, warn, Span};
-
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id, caller, destination))]
 pub async fn handle_invite(
@@ -38,8 +36,18 @@ pub async fn handle_invite(
     let mut headers = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
 
+    // --- YENİ: Yinelenen INVITE kontrolü ---
+    let mut conn = redis_client.get_multiplexed_async_connection().await?;
+    let invite_lock_key = format!("processed_invites:{}", call_id);
+    let already_processed: bool = conn.exists(&invite_lock_key).await?;
+    if already_processed {
+        warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı (Redis kilidi), görmezden geliniyor.");
+        return Ok(());
+    }
+    // --- YENİ SONU ---
+
     if active_calls.lock().await.contains_key(&call_id) {
-        warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı, görmezden geliniyor.");
+        warn!(call_id = %call_id, "Yinelenen INVITE isteği alındı (aktif çağrı), görmezden geliniyor.");
         return Ok(());
     }
 
@@ -68,13 +76,6 @@ pub async fn handle_invite(
         if let Some(contact_uri) = target_contact_uri {
             info!(contact = %contact_uri, "Hedef kullanıcı bulundu.");
             
-            // TODO: [P2P Proxy Mantığı - Faz 2]
-            // 1. Gelen INVITE paketini kopyala.
-            // 2. Request-URI'ı `contact_uri` ile değiştir.
-            // 3. Via başlıklarını yönet: En üstteki Via başlığını kaldır, kendi Via başlığımızı ekle.
-            // 4. Record-Route başlıkları ekleyerek diyaloğun geri dönüş yolunu garantile.
-            // 5. Modifiye edilmiş paketi `contact_uri`'daki adrese UDP ile gönder.
-            // Bu, tam teşekküllü bir SIP Proxy davranışı gerektirir.
             warn!("P2P proxy mantığı henüz implemente edilmedi. Çağrı reddediliyor.");
             sock.send_to(
                 create_response("404 Not Found", &headers, None, &config, addr).as_bytes(),
@@ -183,6 +184,10 @@ pub async fn handle_invite(
     sock.send_to(ok_response.as_bytes(), addr).await?;
 
     info!("Çağrı başarıyla yanıtlandı (200 OK gönderildi).");
+    
+    // --- YENİ: Başarılı yanıttan sonra Redis kilidini koy ---
+    let _: () = conn.set_ex(&invite_lock_key, true, 30).await?;
+    // --- YENİ SONU ---
 
     let event_payload = serde_json::json!({
         "eventType": "call.started", "traceId": trace_id, "callId": call_id, "from": from_uri, "to": to_uri,
@@ -203,7 +208,6 @@ pub async fn handle_invite(
     info!("'call.started' olayı yayınlandı.");
 
 
-    // --- YENİ (SIG-FEAT-01): 'call.answered' olayını yayınla ---
     let answered_event_payload = serde_json::json!({
         "eventType": "call.answered",
         "traceId": trace_id,
@@ -213,7 +217,7 @@ pub async fn handle_invite(
     let _ = rabbit_channel
         .basic_publish(
             RABBITMQ_EXCHANGE_NAME,
-            "call.answered", // Yeni routing key
+            "call.answered",
             BasicPublishOptions::default(),
             answered_event_payload.to_string().as_bytes(),
             BasicProperties::default().with_delivery_mode(2),
@@ -221,7 +225,6 @@ pub async fn handle_invite(
         .await?
         .await?;
     info!("'call.answered' olayı yayınlandı.");
-    // --- YENİ (SIG-FEAT-01) SONU ---
 
     Ok(())
 }

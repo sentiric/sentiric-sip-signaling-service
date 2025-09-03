@@ -6,6 +6,11 @@ Bu belge, `sip-signaling` ve `sip-gateway` servislerinin ortak sorumluluğu olan
 
 ### **FAZ 1: Stabil Çağrı Kurulumu (Tamamlanmış Görevler)**
 *   [x] **SIG-001 - SIG-008**: Çekirdek `INVITE`/`BYE` akışı, orkestrasyon, olay yayınlama ve `REGISTER` kimlik doğrulama.
+*   [x] **SIG-BUG-02 (YENİ): Yinelenen INVITE İsteklerine Karşı Dayanıklılık**
+    -   **Durum:** ✅ **Tamamlandı**
+    -   **Öncelik:** **KRİTİK**
+    -   **Problem Tanımı:** Telekom sağlayıcıları, `200 OK` yanıtını alana kadar aynı `Call-ID` ile defalarca `INVITE` gönderebilir. Bu durum, `sip-signaling`'in aynı çağrı için birden fazla `call.started` olayı yayınlamasına neden olarak `agent-service`'te yarış durumu (race condition) yaratıyordu.
+    -   **Çözüm Stratejisi:** Bir `INVITE` başarıyla işlendiğinde, `Call-ID`'si kısa bir TTL (30sn) ile Redis'e "işlendi" olarak kaydedildi. Bu süre içinde gelen aynı `Call-ID`'li tüm `INVITE`'lar artık tamamen görmezden geliniyor.
 
 ---
 
