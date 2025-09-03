@@ -1,10 +1,11 @@
-// File: src/main.rs
+// File: src/main.rs (TAM VE DÜZELTİLMİŞ NİHAİ HALİ)
 use std::env;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+// --- DÜZELTME: Bu satır kaldırıldı ---
+// use tracing_subscriber::EnvFilter;
 
 mod config;
 mod grpc;
@@ -20,21 +21,21 @@ use state::{ActiveCalls, cleanup_old_transactions};
 async fn main() -> Result<(), Box<dyn Error>> {
     let config = Arc::new(AppConfig::load_from_env()?);
 
+    // DÜZELTME: `EnvFilter` doğrudan `tracing_subscriber`'dan çağrılıyor
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let subscriber_builder = tracing_subscriber::fmt().with_env_filter(env_filter);
+    
     if config.env == "development" {
         subscriber_builder.init();
     } else {
         subscriber_builder.json().init();
     }
 
-    // YENİ: Build-time değişkenlerini environment'tan oku
     let service_version = env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
     let git_commit = env::var("GIT_COMMIT").unwrap_or_else(|_| "unknown".to_string());
     let build_date = env::var("BUILD_DATE").unwrap_or_else(|_| "unknown".to_string());
 
-    // YENİ: Başlangıçta versiyon bilgisini logla
     info!(
         service_name = "sentiric-sip-signaling-service",
         version = %service_version,
