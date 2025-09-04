@@ -29,16 +29,13 @@ async fn main() -> Result<(), ServiceError> {
             process::exit(1);
         }
     };
-
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let subscriber_builder = tracing_subscriber::fmt().with_env_filter(env_filter);
-    
     if config.env == "development" {
         subscriber_builder.with_target(true).with_line_number(true).init();
     } else {
         subscriber_builder.json().with_current_span(true).with_span_list(true).init();
     }
-    
     info!(
         service_name = "sentiric-sip-signaling-service",
         version = %env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string()),
@@ -49,31 +46,23 @@ async fn main() -> Result<(), ServiceError> {
     );
 
     let active_calls: ActiveCalls = Arc::new(Default::default());
-    
-    // DÜZELTME: `?` operatörleri kaldırıldı ve `Arc` ile sarmalama işlemi doğru yapıldı.
     let redis_client = Arc::new(redis::connect_with_retry(&config.redis_url).await);
     let rabbit_channel = Arc::new(rabbitmq::connection::connect_with_retry(&config.rabbitmq_url).await);
-    
     rabbitmq::connection::declare_exchange(&rabbit_channel).await?;
-    
-    let sock = UdpSocket::bind(config.sip_listen_addr)
-        .await
-        .map_err(|e| ServiceError::SocketBind { addr: config.sip_listen_addr, source: e })?;
+    let sock = UdpSocket::bind(config.sip_listen_addr).await.map_err(|e| ServiceError::SocketBind { addr: config.sip_listen_addr, source: e })?;
     let sock = Arc::new(sock);
     info!(address = %config.sip_listen_addr, "✅ SIP dinleyici başlatıldı.");
 
+    // DÜZELTME: `config` parametresi eklendi.
     let termination_task = tokio::spawn(rabbitmq::terminate::listen_for_termination_requests(
-        Arc::clone(&sock),
-        Arc::clone(&rabbit_channel),
-        Arc::clone(&active_calls),
+        Arc::clone(&sock), Arc::clone(&rabbit_channel), Arc::clone(&active_calls), Arc::clone(&config)
     ));
     let cleanup_task = tokio::spawn(cleanup_old_transactions(Arc::clone(&active_calls)));
     
     let main_loop = async {
         let mut buf = [0; 65535];
         loop {
-            let (len, addr) = sock.recv_from(&mut buf).await?; // Buradaki `?` doğru çünkü main_loop Result döndürüyor.
-            
+            let (len, addr) = sock.recv_from(&mut buf).await?;
             tokio::spawn(sip::handler::handle_sip_request(
                 buf[..len].to_vec(),
                 Arc::clone(&sock),
@@ -91,7 +80,6 @@ async fn main() -> Result<(), ServiceError> {
     select! {
         res = main_loop => {
             if let Err(e) = res {
-                // Hata artık std::io::Error, ServiceError'a çeviriyoruz.
                 error!(error = %ServiceError::from(e), "Kritik ağ hatası, servis durduruluyor.");
                 process::exit(1);
             }
@@ -100,10 +88,8 @@ async fn main() -> Result<(), ServiceError> {
             warn!("Kapatma sinyali (Ctrl+C) alındı. Servis gracefully kapatılıyor...");
         }
     }
-
     termination_task.abort();
     cleanup_task.abort();
-    
     info!("✅ Servis başarıyla kapatıldı.");
     Ok(())
 }

@@ -16,18 +16,14 @@ pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut record_route_headers = Vec::new();
 
     for line in request.lines() {
-        if line.is_empty() {
-            break;
-        }
+        if line.is_empty() { break; }
         if let Some((key, value)) = line.split_once(':') {
             let key_trimmed = key.trim();
             let value_trimmed = value.trim().to_string();
             match key_trimmed.to_lowercase().as_str() {
                 "via" | "v" => via_headers.push(value_trimmed),
                 "record-route" => record_route_headers.push(value_trimmed),
-                _ => {
-                    headers.insert(key_trimmed.to_string(), value_trimmed);
-                }
+                _ => { headers.insert(key_trimmed.to_string(), value_trimmed); }
             }
         }
     }
@@ -44,36 +40,18 @@ pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     }
 }
 
-pub fn create_response(
-    status_line: &str,
-    headers: &HashMap<String, String>,
-    sdp: Option<&str>,
-    config: &AppConfig,
-    remote_addr: SocketAddr,
-) -> String {
+pub fn create_response(status_line: &str, headers: &HashMap<String, String>, sdp: Option<&str>, config: &AppConfig, remote_addr: SocketAddr) -> String {
     let body = sdp.unwrap_or("");
     let empty_string = String::new();
-    
     let mut via = headers.get("Via").cloned().unwrap_or_default();
     if via.contains(";rport") && !via.contains(";received=") {
         via = format!("{};received={}", via, remote_addr.ip());
     }
     let via_line = format!("Via: {}\r\n", via);
-
     let from_header = headers.get("From").unwrap_or(&empty_string);
     let to_header = headers.get("To").unwrap_or(&empty_string);
-
-    let contact_header = format!(
-        "<sip:{}@{}:{}>",
-        "sentiric-signal",
-        config.sip_public_ip,
-        config.sip_listen_addr.port()
-    );
-
-    let www_authenticate_line = headers.get("WWW-Authenticate")
-        .map(|val| format!("WWW-Authenticate: {}\r\n", val))
-        .unwrap_or_default();
-
+    let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
+    let www_authenticate_line = headers.get("WWW-Authenticate").map(|val| format!("WWW-Authenticate: {}\r\n", val)).unwrap_or_default();
     let response_string = format!(
         "SIP/2.0 {}\r\n{}\
         From: {}\r\n\
@@ -86,60 +64,38 @@ pub fn create_response(
         Content-Length: {}\r\n\
         {}\r\n\
         {}",
-        status_line,
-        via_line,
-        from_header,
-        to_header,
+        status_line, via_line, from_header, to_header,
         headers.get("Call-ID").unwrap_or(&empty_string),
         headers.get("CSeq").unwrap_or(&empty_string),
-        www_authenticate_line,
-        contact_header,
-        body.len(),
+        www_authenticate_line, contact_header, body.len(),
         if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" },
         body
     );
-
-    debug!(
-        response_to = %remote_addr,
-        response_body = %response_string.replace("\r\n", "\\r\\n"),
-        "SIP yanıtı gönderiliyor."
-    );
-
+    debug!(response_to = %remote_addr, response_body = %response_string.replace("\r\n", "\\r\\n"), "SIP yanıtı gönderiliyor.");
     response_string
 }
 
-// =========================================================================
-//   NİHAİ VE DOĞRU `BYE` OLUŞTURMA MANTIĞI
-// =========================================================================
-pub fn create_bye_request(call_info: &ActiveCallInfo) -> String {
+// DÜZELTME: Fonksiyon imzası `config` alacak şekilde güncellendi.
+pub fn create_bye_request(call_info: &ActiveCallInfo, config: &AppConfig) -> String {
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
-
     let mut lines = Vec::new();
-    
-    // Request-URI, diyaloğun karşı tarafının INVITE'ta belirttiği Contact adresidir.
     lines.push(format!("BYE {} SIP/2.0", call_info.contact_header));
-
-    // Via başlığı, bu isteği oluşturan olarak KENDİ adresimizi (signaling) içermelidir.
-    // Gateway'in adresi `call_info.remote_addr`'dir.
     let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
-    lines.push(format!("Via: SIP/2.0/UDP {};branch=z9hG4bK.{}", call_info.remote_addr, branch));
+    
+    // `Via` başlığı için `config`'den gelen kendi IP ve portumuzu kullanıyoruz.
+    lines.push(format!("Via: SIP/2.0/UDP {}:{};branch=z9hG4bK.{}", config.sip_public_ip, config.sip_listen_addr.port(), branch));
     
     lines.push(format!("Max-Forwards: 70"));
-    
-    // ÖNEMLİ: `sip-signaling` Route başlığı EKLEMEMELİDİR. Bu, gateway'in görevidir.
-    // Gateway, bizim gönderdiğimiz bu "temiz" paketi alıp, kendi hafızasındaki
-    // düzeltilmiş `Record-Route`'u kullanarak doğru `Route` başlığını ekleyecektir.
-    
-    // From ve To başlıkları INVITE'takinin tersidir.
+    if let Some(route) = &call_info.record_route_header {
+        lines.push(format!("Route: {}", route));
+    }
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
-    
     lines.push(format!("Call-ID: {}", call_info.call_id));
     lines.push(format!("CSeq: {} BYE", cseq_num));
     lines.push(format!("User-Agent: Sentiric Signaling Service"));
     lines.push(format!("Content-Length: 0"));
-
     lines.join("\r\n") + "\r\n\r\n"
 }
 

@@ -19,7 +19,7 @@ pub struct ActiveCallInfo {
     pub to_header: String,
     pub contact_header: String,
     pub record_route_header: Option<String>,
-    pub raw_body: String, // <-- YENİ EKLENDİ
+    pub raw_body: String,
 }
 
 pub type ActiveCalls = Arc<Mutex<HashMap<String, ActiveCallInfo>>>;

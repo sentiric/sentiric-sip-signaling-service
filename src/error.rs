@@ -34,12 +34,10 @@ pub enum ServiceError {
     #[error("Geçersiz başlık (Tonic): {0}")]
     InvalidHeader(#[from] tonic::metadata::errors::InvalidMetadataValue),
 
-    // YENİ: Genel (boxed) hatalar için bir varyant.
     #[error("Beklenmedik bir hata oluştu: {0}")]
     Generic(String),
 }
 
-// Box<dyn Error> için manuel dönüşüm implementasyonu.
 impl From<Box<dyn std::error::Error + Send + Sync>> for ServiceError {
     fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
         ServiceError::Generic(err.to_string())

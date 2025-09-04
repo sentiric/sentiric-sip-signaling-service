@@ -32,10 +32,7 @@ impl CallOrchestrator {
     }
 
     #[instrument(skip(self, context), fields(trace_id = %context.trace_id))]
-    pub async fn setup_call(
-        &self,
-        context: &CallContext,
-    ) -> Result<(u32, ResolveDialplanResponse), ServiceError> {
+    pub async fn setup_call(&self, context: &CallContext) -> Result<(u32, ResolveDialplanResponse), ServiceError> {
         let dialplan_response = self.resolve_dialplan(context).await?;
         info!("Dialplan başarıyla çözüldü.");
         let rtp_port = self.allocate_media_port(context).await?;
@@ -53,31 +50,18 @@ impl CallOrchestrator {
     ) -> Result<(), ServiceError> {
         let to_tag_full = response_headers.get("To").cloned().unwrap_or_default();
         let to_tag = to_tag_full.split(";tag=").nth(1).unwrap_or("").to_string();
-
         let call_info = ActiveCallInfo {
-            remote_addr: context.remote_addr,
-            rtp_port,
-            trace_id: context.trace_id,
-            to_tag,
-            created_at: std::time::Instant::now(),
-            headers: response_headers,
-            call_id: context.call_id,
-            from_header: context.from_header,
-            to_header: context.to_header,
-            contact_header: context.contact_header,
-            record_route_header: context.record_route_header,
-            raw_body: context.raw_body, // <-- YENİ EKLENDİ
+            remote_addr: context.remote_addr, rtp_port, trace_id: context.trace_id, to_tag,
+            created_at: std::time::Instant::now(), headers: response_headers, call_id: context.call_id,
+            from_header: context.from_header, to_header: context.to_header, contact_header: context.contact_header,
+            record_route_header: context.record_route_header, raw_body: context.raw_body,
         };
-        
         self.active_calls.lock().await.insert(call_info.call_id.clone(), call_info.clone());
         info!("Aktif çağrı durumu başarıyla kaydedildi.");
-
         self.publish_call_event("call.started", &call_info, Some(&dialplan_res)).await?;
         info!("'call.started' olayı yayınlandı.");
-
         self.publish_call_event("call.answered", &call_info, None).await?;
         info!("'call.answered' olayı yayınlandı.");
-
         Ok(())
     }
 
@@ -105,7 +89,6 @@ impl CallOrchestrator {
     #[instrument(skip(self, call_info, dialplan_res))]
     async fn publish_call_event(&self, event_type: &str, call_info: &ActiveCallInfo, dialplan_res: Option<&ResolveDialplanResponse>) -> Result<(), ServiceError> {
         let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body);
-
         let mut event_payload = serde_json::json!({
             "eventType": event_type, "traceId": &call_info.trace_id, "callId": &call_info.call_id,
             "timestamp": chrono::Utc::now().to_rfc3339(),
