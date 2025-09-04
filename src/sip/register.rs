@@ -1,14 +1,12 @@
-// File: sentiric-sip-signaling-service/src/sip/register.rs
+// File: src/sip/register.rs
 
-use crate::config::AppConfig;
-use crate::grpc::client::create_secure_grpc_channel;
+use crate::app_state::AppState;
 use crate::redis::{self, AsyncCommands};
-use crate::sip::utils::{create_response, parse_complex_headers};
+use crate::sip::responses::create_response;
+use crate::sip::utils::parse_complex_headers;
 use md5::compute;
 use rand::distributions::{Alphanumeric, DistString};
-use sentiric_contracts::sentiric::user::v1::{
-    user_service_client::UserServiceClient, GetSipCredentialsRequest,
-};
+use sentiric_contracts::sentiric::user::v1::GetSipCredentialsRequest;
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
@@ -17,24 +15,23 @@ use tokio::net::UdpSocket;
 use tonic::Request as TonicRequest;
 use tracing::{error, info, instrument, warn, Span};
 
-// PENDING_REGISTRATIONS'ı buradan kaldırın.
-
+// DÜZELTME: Fonksiyon adı `handle` olarak değiştirildi (E0425 hatası).
+// DÜZELTME: İmza, `AppState` kullanacak şekilde tamamen değiştirildi.
 #[instrument(skip_all, fields(remote_addr = %addr, call_id))]
-pub async fn handle_register(
+pub async fn handle(
     request_str: &str,
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
-    config: Arc<AppConfig>,
-    redis_client: Arc<redis::Client>,
+    state: Arc<AppState>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let headers = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
     let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
     Span::current().record("call_id", &call_id as &str);
 
     if let Some(auth_header) = headers.get("Authorization") {
-        verify_authentication(auth_header, &headers, sock, addr, config, redis_client).await
+        verify_authentication(auth_header, &headers, sock, addr, state).await
     } else {
-        let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = state.redis.get_multiplexed_async_connection().await?;
         let key = format!("pending_reg:{}", call_id);
         let exists: bool = conn.exists(&key).await?;
 
@@ -43,9 +40,8 @@ pub async fn handle_register(
             return Ok(());
         }
 
-        // 10 saniyelik bir TTL ile anahtarı Redis'e set et
         let _: () = conn.set_ex(&key, true, 10).await?;
-        challenge_client(&headers, sock, addr, config).await
+        challenge_client(&headers, sock, addr, state).await
     }
 }
 
@@ -53,20 +49,20 @@ async fn challenge_client(
     headers: &HashMap<String, String>,
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
-    config: Arc<AppConfig>,
+    state: Arc<AppState>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("Authorization başlığı yok, 401 Unauthorized ile challenge gönderiliyor.");
     let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
     
     let auth_challenge = format!(
         r#"Digest realm="{}", qop="auth", nonce="{}""#,
-        config.sip_realm, nonce
+        state.config.sip_realm, nonce
     );
 
     let mut response_headers = headers.clone();
     response_headers.insert("WWW-Authenticate".to_string(), auth_challenge);
 
-    let response = create_response("401 Unauthorized", &response_headers, None, &config, addr);
+    let response = create_response("401 Unauthorized", &response_headers, None, &state.config, addr);
     sock.send_to(response.as_bytes(), addr).await?;
     Ok(())
 }
@@ -77,8 +73,7 @@ async fn verify_authentication(
     headers: &HashMap<String, String>,
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
-    config: Arc<AppConfig>,
-    redis_client: Arc<redis::Client>,
+    state: Arc<AppState>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     info!("Authorization başlığı bulundu, kimlik bilgileri doğrulanıyor.");
     let auth_parts: HashMap<_, _> = auth_header
@@ -98,10 +93,9 @@ async fn verify_authentication(
     let cnonce = auth_parts.get("cnonce");
     let nc = auth_parts.get("nc");
 
-    let user_channel = create_secure_grpc_channel(&config.user_service_url, "user-service").await?;
-    let mut user_client = UserServiceClient::new(user_channel);
+    // DÜZELTME: AppState üzerinden önceden bağlanılmış gRPC istemcisi kullanılıyor.
+    let mut user_client = state.grpc.user.clone();
     
-    // GÜNCELLENDİ: Artık 'realm' alanı ile istek atıyoruz.
     let creds_res = user_client.get_sip_credentials(TonicRequest::new(GetSipCredentialsRequest {
         sip_username: username.to_string(),
         realm: realm.to_string(),
@@ -109,7 +103,7 @@ async fn verify_authentication(
 
     if let Err(e) = creds_res {
         warn!(error = %e, "SIP kullanıcısı bulunamadı veya user-service hatası.");
-        let response = create_response("403 Forbidden", headers, None, &config, addr);
+        let response = create_response("403 Forbidden", headers, None, &state.config, addr);
         sock.send_to(response.as_bytes(), addr).await?;
         return Ok(());
     }
@@ -131,7 +125,7 @@ async fn verify_authentication(
         info!("Kimlik doğrulama başarılı. Kullanıcı kaydediliyor.");
         
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
-        let mut conn = redis_client.get_multiplexed_async_connection().await?;
+        let mut conn = state.redis.get_multiplexed_async_connection().await?;
         let key = format!("pending_reg:{}", call_id);
         let _: () = conn.del(key).await?;
 
@@ -140,27 +134,28 @@ async fn verify_authentication(
 
         if expires > 0 {
             let aor = format!("sip_registration:sip:{}@{}", username, realm);
-            if let Err(e) = redis::set_registration(&redis_client, &aor, &contact_uri, expires).await {
+            // DÜZELTME: AppState üzerinden redis client'ını kullanıyoruz
+            if let Err(e) = redis::set_registration(&state.redis, &aor, &contact_uri, expires).await {
                 error!(error = %e, "Redis'e kayıt yapılamadı.");
-                let response = create_response("500 Server Internal Error", headers, None, &config, addr);
+                let response = create_response("500 Server Internal Error", headers, None, &state.config, addr);
                 sock.send_to(response.as_bytes(), addr).await?;
                 return Err(e.into());
             }
         } else {
             info!("Kullanıcı kaydı siliniyor (Expires=0).");
             let aor = format!("sip_registration:sip:{}@{}", username, realm);
-            let mut conn = redis_client.get_multiplexed_async_connection().await?;
+            let mut conn = state.redis.get_multiplexed_async_connection().await?;
             let _: () = conn.del(&aor).await?;
         }
 
         let mut response_headers = headers.clone();
         response_headers.insert("Contact".to_string(), format!("{};expires={}", contact_uri, expires));
         
-        let response = create_response("200 OK", &response_headers, None, &config, addr);
+        let response = create_response("200 OK", &response_headers, None, &state.config, addr);
         sock.send_to(response.as_bytes(), addr).await?;
     } else {
         warn!(client_response, expected_response, "Kimlik doğrulama başarısız. Yanlış şifre.");
-        let response = create_response("403 Forbidden", headers, None, &config, addr);
+        let response = create_response("403 Forbidden", headers, None, &state.config, addr);
         sock.send_to(response.as_bytes(), addr).await?;
     }
 

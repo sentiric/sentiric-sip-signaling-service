@@ -1,25 +1,18 @@
-// File: src/sip/handler.rs (TAM VE DÜZELTİLMİŞ NİHAİ HALİ)
-
-use super::{bye::handle_bye, invite::handle_invite, register::handle_register};
-use crate::config::AppConfig;
-use crate::state::ActiveCalls;
-use lapin::Channel as LapinChannel;
+// File: src/sip/handler.rs
+use super::{bye, invite, register};
+use crate::app_state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, instrument};
 
-use crate::redis;
-
+// Fonksiyon imzası AppState alacak şekilde güncellendi.
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id))]
 pub async fn handle_sip_request(
     request_bytes: Vec<u8>,
     sock: Arc<UdpSocket>,
     addr: SocketAddr,
-    config: Arc<AppConfig>,
-    rabbit_channel: Arc<LapinChannel>,
-    active_calls: ActiveCalls,
-    redis_client: Arc<redis::Client>,
+    state: Arc<AppState>,
 ) {
     let request_str = match std::str::from_utf8(&request_bytes) {
         Ok(s) => s,
@@ -31,20 +24,20 @@ pub async fn handle_sip_request(
 
     debug!(
         request_from = %addr,
-        request_body = %request_str.replace("\r\n", "\\r\\n"),
+        request_body = %request_str.replace("\r\n", "\\r\n"),
         "Gelen ham SIP isteği."
     );
 
+    // Her bir alt handler'a `sock` ve `state`'i iletiyoruz.
     let result = if request_str.starts_with("REGISTER") {
         info!("REGISTER isteği işleniyor...");
-        handle_register(request_str, sock, addr, config, redis_client).await
+        register::handle(request_str, sock, addr, state).await
     } else if request_str.starts_with("INVITE") {
         info!("INVITE isteği işleniyor...");
-        handle_invite(request_str, sock, addr, config, rabbit_channel, active_calls, redis_client).await
+        invite::handle(request_str, sock, addr, state).await
     } else if request_str.starts_with("BYE") {
         info!("BYE isteği işleniyor...");
-        // --- DÜZELTME BURADA: Fazladan `rabbit_channel` argümanı kaldırıldı ---
-        handle_bye(request_str, sock, addr, config, active_calls).await
+        bye::handle(request_str, sock, addr, state).await
     } else if request_str.starts_with("ACK") {
         debug!("ACK isteği alındı, görmezden geliniyor.");
         Ok(())

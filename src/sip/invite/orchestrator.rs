@@ -1,0 +1,124 @@
+// File: src/sip/invite/orchestrator.rs
+use crate::app_state::AppState;
+use crate::error::ServiceError;
+use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
+use crate::sip::call_context::CallContext;
+use crate::sip::utils::extract_sdp_media_info_from_body;
+use crate::state::ActiveCallInfo;
+use lapin::{options::*, BasicProperties, Channel as LapinChannel}; // LapinChannel'ı import et
+use rand::Rng;
+use sentiric_contracts::sentiric::{
+    dialplan::v1::{ResolveDialplanRequest, ResolveDialplanResponse},
+    media::v1::AllocatePortRequest,
+};
+use std::sync::Arc;
+use tonic::Request as TonicRequest;
+use tracing::{info, instrument, warn}; // warn'ı import et
+
+// ... setup_and_finalize_call ve diğer gRPC fonksiyonları aynı ...
+#[instrument(skip_all, fields(trace_id = %context.trace_id))]
+pub async fn setup_and_finalize_call(
+    context: &CallContext,
+    state: Arc<AppState>,
+) -> Result<ActiveCallInfo, ServiceError> {
+    // 1. Dialplan'i Çöz
+    let dialplan_response = resolve_dialplan(context, state.clone()).await?;
+    info!("Dialplan başarıyla çözüldü.");
+
+    // 2. Medya Portu Ayır
+    let rtp_port = allocate_media_port(context, state.clone()).await?;
+    info!(rtp_port, "Medya portu başarıyla ayrıldı.");
+
+    // 3. Çağrı Bilgisini ve Durumunu Sonlandır
+    let mut response_headers = context.headers.clone();
+    let to_tag: u32 = rand::thread_rng().gen();
+    response_headers.entry("To".to_string()).and_modify(|v| *v = format!("{};tag={}", v, to_tag));
+    
+    let call_info = ActiveCallInfo {
+        remote_addr: context.remote_addr,
+        rtp_port,
+        trace_id: context.trace_id.clone(),
+        to_tag: to_tag.to_string(),
+        created_at: std::time::Instant::now(),
+        headers: response_headers.clone(),
+        call_id: context.call_id.clone(),
+        from_header: context.from_header.clone(),
+        to_header: context.to_header.clone(),
+        contact_header: context.contact_header.clone(),
+        record_route_header: context.record_route_header.clone(),
+        raw_body: context.raw_body.clone(),
+    };
+    
+    state.active_calls.lock().await.insert(call_info.call_id.clone(), call_info.clone());
+    info!("Aktif çağrı durumu başarıyla kaydedildi.");
+
+    // 4. RabbitMQ Olaylarını Yayınla (Eğer RabbitMQ bağlıysa)
+    if let Some(rabbit_channel) = &state.rabbit {
+        publish_call_event("call.started", &call_info, Some(&dialplan_response), rabbit_channel).await?;
+        info!("'call.started' olayı yayınlandı.");
+        publish_call_event("call.answered", &call_info, None, rabbit_channel).await?;
+        info!("'call.answered' olayı yayınlandı.");
+    } else {
+        warn!("RabbitMQ bağlantısı aktif değil, 'call.started' ve 'call.answered' olayları yayınlanamadı.");
+    }
+    
+    Ok(call_info)
+}
+
+#[instrument(skip(context, state))]
+async fn resolve_dialplan(context: &CallContext, state: Arc<AppState>) -> Result<ResolveDialplanResponse, ServiceError> {
+    let mut dialplan_client = state.grpc.dialplan.clone();
+    let mut dialplan_req = TonicRequest::new(ResolveDialplanRequest {
+        caller_contact_value: context.caller_id.clone(),
+        destination_number: context.destination_number.clone(),
+    });
+    dialplan_req.metadata_mut().insert("x-trace-id", context.trace_id.parse()?);
+    let dialplan_res = dialplan_client.resolve_dialplan(dialplan_req).await?.into_inner();
+    Ok(dialplan_res)
+}
+
+#[instrument(skip(context, state))]
+async fn allocate_media_port(context: &CallContext, state: Arc<AppState>) -> Result<u32, ServiceError> {
+    let mut media_client = state.grpc.media.clone();
+    let mut media_req = TonicRequest::new(AllocatePortRequest { call_id: context.call_id.clone() });
+    media_req.metadata_mut().insert("x-trace-id", context.trace_id.parse()?);
+    let rtp_port = media_client.allocate_port(media_req).await?.into_inner().rtp_port;
+    Ok(rtp_port)
+}
+
+
+#[instrument(skip(call_info, dialplan_res, rabbit_channel))]
+async fn publish_call_event(
+    event_type: &str,
+    call_info: &ActiveCallInfo,
+    dialplan_res: Option<&ResolveDialplanResponse>,
+    // DÜZELTME: Artık AppState yerine doğrudan LapinChannel'ı alıyor.
+    rabbit_channel: &Arc<LapinChannel>,
+) -> Result<(), ServiceError> {
+    let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body);
+    let mut event_payload = serde_json::json!({
+        "eventType": event_type,
+        "traceId": &call_info.trace_id,
+        "callId": &call_info.call_id,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+
+    if event_type == "call.started" {
+        event_payload["from"] = serde_json::Value::String(call_info.from_header.clone());
+        event_payload["to"] = serde_json::Value::String(call_info.to_header.clone());
+        event_payload["media"] = serde_json::json!({ "server_rtp_port": call_info.rtp_port, "caller_rtp_addr": sdp_info });
+        if let Some(res) = dialplan_res {
+            event_payload["dialplan"] = serde_json::to_value(res)?;
+        }
+    }
+
+    rabbit_channel.basic_publish(
+        RABBITMQ_EXCHANGE_NAME,
+        event_type,
+        BasicPublishOptions::default(),
+        event_payload.to_string().as_bytes(),
+        BasicProperties::default().with_delivery_mode(2),
+    ).await?.await?;
+    
+    Ok(())
+}

@@ -1,10 +1,11 @@
 // File: src/sip/mod.rs
 pub mod bye;
+pub mod call_context;
 pub mod handler;
-pub mod invite;
+pub mod invite; // Değişiklik: Artık bir modül
 pub mod register;
+pub mod responses; // Yeni
 pub mod utils;
 
-// --- YENİ MODÜLLER ---
-pub mod call_context; 
-pub mod orchestrator;
+// `orchestrator` artık `invite` modülünün içinde
+// pub mod orchestrator; // Kaldırıldı

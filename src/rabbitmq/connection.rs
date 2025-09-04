@@ -1,29 +1,19 @@
 // File: sentiric-sip-signaling-service/src/rabbitmq/connection.rs
 use lapin::{options::*, types::FieldTable, Channel as LapinChannel, Connection, ConnectionProperties, ExchangeKind};
-use std::time::Duration;
-use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::info;
 
 pub const RABBITMQ_EXCHANGE_NAME: &str = "sentiric_events";
 
-pub async fn connect_with_retry(url: &str) -> LapinChannel {
-    let max_retries = 10;
-    for i in 0..max_retries {
-        if let Ok(conn) = Connection::connect(url, ConnectionProperties::default()).await {
-            if let Ok(channel) = conn.create_channel().await {
-                info!("RabbitMQ bağlantısı başarıyla kuruldu.");
-                return channel;
-            }
-        }
-        warn!(
-            attempt = i + 1,
-            max_attempts = max_retries,
-            "RabbitMQ'ya bağlanılamadı. 5sn sonra tekrar denenecek..."
-        );
-        sleep(Duration::from_secs(5)).await;
-    }
-    panic!("Maksimum deneme sayısına ulaşıldı, RabbitMQ'ya bağlanılamadı.");
+// Artık sadece bu fonksiyon kullanılıyor.
+pub async fn try_connect(url: &str) -> Result<LapinChannel, lapin::Error> {
+    let conn = Connection::connect(url, ConnectionProperties::default()).await?;
+    let channel = conn.create_channel().await?;
+    info!("RabbitMQ bağlantısı başarıyla kuruldu.");
+    Ok(channel)
 }
+
+// DÜZELTME: Bu fonksiyon artık kullanılmadığı için kaldırıldı.
+// pub async fn connect_with_retry(url: &str) -> LapinChannel { ... }
 
 pub async fn declare_exchange(channel: &LapinChannel) -> Result<(), lapin::Error> {
     channel

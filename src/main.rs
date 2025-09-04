@@ -5,9 +5,11 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::signal;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod app_state;
 mod config;
 mod error;
 mod grpc;
@@ -16,12 +18,18 @@ mod redis;
 mod sip;
 mod state;
 
+use app_state::AppState;
 use config::AppConfig;
 use error::ServiceError;
-use state::{cleanup_old_transactions, ActiveCalls};
+use sip::responses::create_response;
+use sip::utils::parse_complex_headers;
+use state::cleanup_old_transactions;
+
+type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), ServiceError> {
+    // ... config ve logger kurulumu aynı ...
     let config = match AppConfig::load_from_env() {
         Ok(cfg) => Arc::new(cfg),
         Err(e) => {
@@ -29,6 +37,7 @@ async fn main() -> Result<(), ServiceError> {
             process::exit(1);
         }
     };
+    
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let subscriber_builder = tracing_subscriber::fmt().with_env_filter(env_filter);
     if config.env == "development" {
@@ -36,6 +45,7 @@ async fn main() -> Result<(), ServiceError> {
     } else {
         subscriber_builder.json().with_current_span(true).with_span_list(true).init();
     }
+
     info!(
         service_name = "sentiric-sip-signaling-service",
         version = %env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string()),
@@ -45,32 +55,72 @@ async fn main() -> Result<(), ServiceError> {
         "🚀 Servis başlatılıyor..."
     );
 
-    let active_calls: ActiveCalls = Arc::new(Default::default());
-    let redis_client = Arc::new(redis::connect_with_retry(&config.redis_url).await);
-    let rabbit_channel = Arc::new(rabbitmq::connection::connect_with_retry(&config.rabbitmq_url).await);
-    rabbitmq::connection::declare_exchange(&rabbit_channel).await?;
-    let sock = UdpSocket::bind(config.sip_listen_addr).await.map_err(|e| ServiceError::SocketBind { addr: config.sip_listen_addr, source: e })?;
-    let sock = Arc::new(sock);
-    info!(address = %config.sip_listen_addr, "✅ SIP dinleyici başlatıldı.");
+    let shared_state: SharedAppState = Arc::new(Mutex::new(None));
 
-    let termination_task = tokio::spawn(rabbitmq::terminate::listen_for_termination_requests(
-        Arc::clone(&sock), Arc::clone(&rabbit_channel), Arc::clone(&active_calls)
-    ));
-    let cleanup_task = tokio::spawn(cleanup_old_transactions(Arc::clone(&active_calls)));
+    // Arka planda AppState'i başlat
+    let state_clone_for_init = shared_state.clone();
+    let config_clone_for_init = config.clone();
+
+    // DÜZELTME: Termination task'a soketi verebilmek için onu burada oluşturuyoruz.
+    let sock = UdpSocket::bind(config.sip_listen_addr).await.map_err(|e| ServiceError::SocketBind {
+        addr: config.sip_listen_addr,
+        source: e,
+    })?;
+    let sock = Arc::new(sock);
+    info!(address = %config.sip_listen_addr, "✅ SIP dinleyici hemen başlatıldı. Gelen isteklere yanıt verilecek.");
+    
+    let sock_clone_for_init = sock.clone();
+    tokio::spawn(async move {
+        info!("Arka planda uygulama durumu (bağlantılar) başlatılıyor...");
+        match AppState::new_critical(config_clone_for_init).await {
+            Ok(mut state) => {
+                state.connect_rabbitmq().await;
+                if state.rabbit.is_some() {
+                    info!("✅ Kritik olmayan bağımlılık (RabbitMQ) başarıyla kuruldu.");
+                } else {
+                    warn!("Kritik olmayan bağımlılık (RabbitMQ) kurulamadı. Servis düşük işlevsellik modunda çalışacak.");
+                }
+                
+                let final_state = Arc::new(state);
+                
+                // Arka plan görevlerini burada, state hazır olunca başlat
+                tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
+                tokio::spawn(rabbitmq::terminate::listen_for_termination_requests(sock_clone_for_init, final_state.clone()));
+                
+                *state_clone_for_init.lock().await = Some(final_state);
+                info!("✅ Tüm bağımlılıklar başarıyla kuruldu. Servis tam işlevsel.");
+            }
+            Err(e) => {
+                error!(error = %e, "Kritik bağımlılıklar başlatılamadı. Servis başlatılamıyor ve sonlandırılacak.");
+                process::exit(1);
+            }
+        }
+    });
     
     let main_loop = async {
         let mut buf = [0; 65535];
         loop {
             let (len, addr) = sock.recv_from(&mut buf).await?;
-            tokio::spawn(sip::handler::handle_sip_request(
-                buf[..len].to_vec(),
-                Arc::clone(&sock),
-                addr,
-                Arc::clone(&config),
-                Arc::clone(&rabbit_channel),
-                Arc::clone(&active_calls),
-                Arc::clone(&redis_client),
-            ));
+            let request_bytes = buf[..len].to_vec();
+            
+            let locked_state = shared_state.lock().await;
+            if let Some(state) = locked_state.as_ref() {
+                tokio::spawn(sip::handler::handle_sip_request(
+                    request_bytes,
+                    Arc::clone(&sock),
+                    addr,
+                    state.clone(),
+                ));
+            } else {
+                warn!(from = %addr, "Servis henüz başlatılıyor, isteğe 503 Service Unavailable yanıtı veriliyor.");
+                let request_str = String::from_utf8_lossy(&request_bytes);
+                if request_str.starts_with("INVITE") {
+                    if let Some(headers) = parse_complex_headers(&request_str) {
+                        let response = create_response("503 Service Unavailable", &headers, None, &config, addr);
+                        let _ = sock.send_to(response.as_bytes(), addr).await;
+                    }
+                }
+            }
         }
         #[allow(unreachable_code)]
         Ok::<(), std::io::Error>(())
@@ -87,8 +137,7 @@ async fn main() -> Result<(), ServiceError> {
             warn!("Kapatma sinyali (Ctrl+C) alındı. Servis gracefully kapatılıyor...");
         }
     }
-    termination_task.abort();
-    cleanup_task.abort();
+    
     info!("✅ Servis başarıyla kapatıldı.");
     Ok(())
 }
