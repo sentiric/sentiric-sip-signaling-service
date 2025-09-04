@@ -108,23 +108,30 @@ pub fn create_response(
     response_string
 }
 
+// =========================================================================
+//   NİHAİ VE DOĞRU `BYE` OLUŞTURMA MANTIĞI
+// =========================================================================
 pub fn create_bye_request(call_info: &ActiveCallInfo) -> String {
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
 
     let mut lines = Vec::new();
     
+    // Request-URI, diyaloğun karşı tarafının INVITE'ta belirttiği Contact adresidir.
     lines.push(format!("BYE {} SIP/2.0", call_info.contact_header));
-    
+
+    // Via başlığı, bu isteği oluşturan olarak KENDİ adresimizi (signaling) içermelidir.
+    // Gateway'in adresi `call_info.remote_addr`'dir.
     let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
     lines.push(format!("Via: SIP/2.0/UDP {};branch=z9hG4bK.{}", call_info.remote_addr, branch));
     
     lines.push(format!("Max-Forwards: 70"));
     
-    if let Some(route) = &call_info.record_route_header {
-        lines.push(format!("Route: {}", route));
-    }
+    // ÖNEMLİ: `sip-signaling` Route başlığı EKLEMEMELİDİR. Bu, gateway'in görevidir.
+    // Gateway, bizim gönderdiğimiz bu "temiz" paketi alıp, kendi hafızasındaki
+    // düzeltilmiş `Record-Route`'u kullanarak doğru `Route` başlığını ekleyecektir.
     
+    // From ve To başlıkları INVITE'takinin tersidir.
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
     
