@@ -2,15 +2,16 @@
 use super::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::app_state::AppState;
 use crate::error::ServiceError;
-use crate::state::ActiveCallInfo; // YENİ
+use crate::state::ActiveCallInfo;
 use futures_util::StreamExt;
 use lapin::{options::*, types::FieldTable, BasicProperties, Channel as LapinChannel, Consumer};
-use rand::Rng; // YENİ
+use rand::Rng;
 use serde::Deserialize;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{error, info, instrument, warn};
 
+// ... TerminationRequest ve diğer fonksiyonlar aynı kalır ...
 #[derive(Deserialize, Debug)]
 struct TerminationRequest {
     #[serde(rename = "callId")]
@@ -64,7 +65,6 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
         let _enter = span.enter();
         info!("Aktif çağrı bulundu, BYE paketi oluşturuluyor ve gönderiliyor.");
         
-        // DÜZELTME: create_bye_request artık burada.
         let bye_request = create_bye_request(&call_info);
         
         if let Err(e) = sock.send_to(bye_request.as_bytes(), call_info.remote_addr).await {
@@ -92,7 +92,6 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
     }
 }
 
-// YENİ: Bu fonksiyon sip::utils'ten buraya taşındı.
 fn create_bye_request(call_info: &ActiveCallInfo) -> String {
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
@@ -105,9 +104,24 @@ fn create_bye_request(call_info: &ActiveCallInfo) -> String {
     
     lines.push(format!("Max-Forwards: 70"));
     
+    // =========================================================================
+    //   NİHAİ DÜZELTME: Route başlığını standart dışı parametrelerden temizle
+    // =========================================================================
     if let Some(route) = &call_info.record_route_header {
-        lines.push(format!("Route: {}", route));
+        // `ftag` gibi standart dışı parametreleri temizlemek için sadece noktalı virgüle kadar olan kısmı alalım.
+        // Örnek: "<sip:1.2.3.4;transport=udp;ftag=...;lr>" -> "<sip:1.2.3.4;transport=udp;lr>"
+        // Daha sağlam bir yöntem regex olurdu ama bu çoğu durumu çözer.
+        let sanitized_route: String = route.split(';')
+            .filter(|part| !part.starts_with("ftag="))
+            .collect::<Vec<&str>>()
+            .join(";");
+
+        if &sanitized_route != route {
+            info!(original = %route, sanitized = %sanitized_route, "Route başlığı standart olmayan parametrelerden temizlendi.");
+        }
+        lines.push(format!("Route: {}", sanitized_route));
     }
+    // =========================================================================
 
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
