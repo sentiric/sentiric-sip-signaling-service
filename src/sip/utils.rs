@@ -1,17 +1,14 @@
-// File: src/sip/utils.rs (TAM VE GÜNCELLENMİŞ HALİ)
-
+// File: src/sip/utils.rs (TAM KOD)
 use crate::config::AppConfig;
+use crate::state::ActiveCallInfo;
 use once_cell::sync::Lazy;
+use rand::Rng;
 use regex::Regex;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-// DÜZELTME 1: `debug` makrosunu import ediyoruz.
 use tracing::{debug, info, warn};
-use rand::Rng;
 
-// --- EKSİK OLAN KISIM BURASIYDI ---
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
-// --- DÜZELTME SONU ---
 
 pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut headers = HashMap::new();
@@ -56,32 +53,15 @@ pub fn create_response(
 ) -> String {
     let body = sdp.unwrap_or("");
     let empty_string = String::new();
-    
     let mut via = headers.get("Via").cloned().unwrap_or_default();
     if via.contains(";rport") && !via.contains(";received=") {
         via = format!("{};received={}", via, remote_addr.ip());
     }
     let via_line = format!("Via: {}\r\n", via);
-
     let from_header = headers.get("From").unwrap_or(&empty_string);
-    let mut to_header = headers.get("To").unwrap_or(&empty_string).clone();
-
-    if !to_header.contains(";tag=") && status_line != "100 Trying" {
-        let to_tag = format!(";tag={}", rand::thread_rng().gen::<u32>());
-        to_header.push_str(&to_tag);
-    }
-
-    let contact_header = format!(
-        "<sip:{}@{}:{}>",
-        "sentiric-signal",
-        config.sip_public_ip,
-        config.sip_listen_addr.port()
-    );
-
-    let www_authenticate_line = headers.get("WWW-Authenticate")
-        .map(|val| format!("WWW-Authenticate: {}\r\n", val))
-        .unwrap_or_default();
-
+    let to_header = headers.get("To").unwrap_or(&empty_string);
+    let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
+    let www_authenticate_line = headers.get("WWW-Authenticate").map(|val| format!("WWW-Authenticate: {}\r\n", val)).unwrap_or_default();
     let response_string = format!(
         "SIP/2.0 {}\r\n{}\
         From: {}\r\n\
@@ -94,90 +74,63 @@ pub fn create_response(
         Content-Length: {}\r\n\
         {}\r\n\
         {}",
-        status_line,
-        via_line,
-        from_header,
-        to_header,
+        status_line, via_line, from_header, to_header,
         headers.get("Call-ID").unwrap_or(&empty_string),
         headers.get("CSeq").unwrap_or(&empty_string),
-        www_authenticate_line,
-        contact_header,
-        body.len(),
+        www_authenticate_line, contact_header, body.len(),
         if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" },
         body
     );
-
-    debug!(
-        response_to = %remote_addr,
-        response_body = %response_string.replace("\r\n", "\\r\\n"),
-        "SIP yanıtı gönderiliyor."
-    );
-
+    debug!(response_to = %remote_addr, response_body = %response_string.replace("\r\n", "\\r\\n"), "SIP yanıtı gönderiliyor.");
     response_string
 }
 
-
-pub fn create_bye_request(headers: &HashMap<String, String>) -> String {
-    let empty_string = String::new();
-    let original_cseq = headers.get("CSeq").unwrap_or(&empty_string);
-    let cseq_num = original_cseq
-        .split_whitespace()
-        .next()
-        .unwrap_or("1")
-        .parse::<u32>()
-        .unwrap_or(1)
-        + 1;
-
-    format!(
-        "BYE {to_uri} SIP/2.0\r\n\
-        Via: {via}\r\n\
-        From: {from}\r\n\
-        To: {to}\r\n\
-        Call-ID: {call_id}\r\n\
-        CSeq: {cseq} BYE\r\n\
-        Max-Forwards: 70\r\n\
-        User-Agent: Sentiric Signaling Service\r\n\
-        Content-Length: 0\r\n\r\n",
-        to_uri = headers.get("From").unwrap_or(&empty_string).split_whitespace().nth(0).unwrap_or(""),
-        via = headers.get("Via").unwrap_or(&empty_string),
-        from = headers.get("To").unwrap_or(&empty_string),
-        to = headers.get("From").unwrap_or(&empty_string),
-        call_id = headers.get("Call-ID").unwrap_or(&empty_string),
-        cseq = cseq_num
-    )
+pub fn create_bye_request(call_info: &ActiveCallInfo, to_tag: &str) -> String {
+    let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
+    let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
+    let mut lines = Vec::new();
+    lines.push(format!("BYE {} SIP/2.0", call_info.contact_header));
+    let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
+    lines.push(format!("Via: SIP/2.0/UDP {};branch=z9hG4bK.{}", call_info.remote_addr, branch));
+    lines.push(format!("Max-Forwards: 70"));
+    if let Some(route) = &call_info.record_route_header {
+        lines.push(format!("Route: {}", route));
+    }
+    lines.push(format!("From: {};tag={}", call_info.to_header, to_tag));
+    lines.push(format!("To: {}", call_info.from_header));
+    lines.push(format!("Call-ID: {}", call_info.call_id));
+    lines.push(format!("CSeq: {} BYE", cseq_num));
+    lines.push(format!("User-Agent: Sentiric Signaling Service"));
+    lines.push(format!("Content-Length: 0"));
+    lines.join("\r\n") + "\r\n\r\n"
 }
 
 pub fn extract_user_from_uri(uri: &str) -> Option<String> {
-    USER_EXTRACT_RE
-        .captures(uri)
-        .and_then(|caps| caps.get(1))
-        .map(|user_part| {
-            let original_num = user_part.as_str();
-            let mut num: String = original_num.chars().filter(|c| c.is_digit(10)).collect();
-            if num.len() == 11 && num.starts_with('0') {
-                num = format!("90{}", &num[1..]);
-            } else if num.len() == 10 && !num.starts_with("90") {
-                num = format!("90{}", num);
-            }
-            let normalized_num = num;
-            if original_num != normalized_num {
-                info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi.");
-            }
-            normalized_num
-        })
+    USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| {
+        let original_num = user_part.as_str();
+        let mut num: String = original_num.chars().filter(|c| c.is_digit(10)).collect();
+        if num.len() == 11 && num.starts_with('0') {
+            num = format!("90{}", &num[1..]);
+        } else if num.len() == 10 && !num.starts_with("90") {
+            num = format!("90{}", num);
+        }
+        let normalized_num = num;
+        if original_num != normalized_num {
+            info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi.");
+        }
+        normalized_num
+    })
 }
 
-pub fn extract_sdp_media_info(sip_request: &str) -> Option<String> {
+pub fn extract_sdp_media_info_from_body(sip_body: &str) -> Option<String> {
     let mut ip_addr: Option<&str> = None;
     let mut port: Option<&str> = None;
-    if let Some(sdp_part) = sip_request.split("\r\n\r\n").nth(1) {
-        for line in sdp_part.lines() {
-            if line.starts_with("c=IN IP4 ") {
-                ip_addr = line.split_whitespace().nth(2);
-            }
-            if line.starts_with("m=audio ") {
-                port = line.split_whitespace().nth(1);
-            }
+    for line in sip_body.lines() {
+        if line.starts_with("c=IN IP4 ") {
+            ip_addr = line.split_whitespace().nth(2);
+        }
+        if line.starts_with("m=audio ") {
+            port = line.split_whitespace().nth(1);
         }
     }
     if let (Some(ip), Some(p)) = (ip_addr, port) {
