@@ -11,7 +11,6 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{error, info, instrument, warn};
 
-// ... TerminationRequest ve diğer fonksiyonlar aynı kalır ...
 #[derive(Deserialize, Debug)]
 struct TerminationRequest {
     #[serde(rename = "callId")]
@@ -45,6 +44,7 @@ async fn setup_consumer(channel: &LapinChannel) -> Result<Consumer, ServiceError
     Ok(consumer)
 }
 
+
 async fn process_messages(mut consumer: Consumer, sock: Arc<UdpSocket>, state: Arc<AppState>) {
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
@@ -56,6 +56,7 @@ async fn process_messages(mut consumer: Consumer, sock: Arc<UdpSocket>, state: A
         }
     }
 }
+
 
 #[instrument(skip(sock, state))]
 async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, state: &Arc<AppState>) {
@@ -105,21 +106,14 @@ fn create_bye_request(call_info: &ActiveCallInfo) -> String {
     lines.push(format!("Max-Forwards: 70"));
     
     // =========================================================================
-    //   NİHAİ DÜZELTME: Route başlığını standart dışı parametrelerden temizle
+    //   NİHAİ DÜZELTME: Sadece 'trasport' hatasını düzelt, 'ftag' gibi
+    //   diğer parametrelere dokunma.
     // =========================================================================
     if let Some(route) = &call_info.record_route_header {
-        // `ftag` gibi standart dışı parametreleri temizlemek için sadece noktalı virgüle kadar olan kısmı alalım.
-        // Örnek: "<sip:1.2.3.4;transport=udp;ftag=...;lr>" -> "<sip:1.2.3.4;transport=udp;lr>"
-        // Daha sağlam bir yöntem regex olurdu ama bu çoğu durumu çözer.
-        let sanitized_route: String = route.split(';')
-            .filter(|part| !part.starts_with("ftag="))
-            .collect::<Vec<&str>>()
-            .join(";");
-
-        if &sanitized_route != route {
-            info!(original = %route, sanitized = %sanitized_route, "Route başlığı standart olmayan parametrelerden temizlendi.");
-        }
-        lines.push(format!("Route: {}", sanitized_route));
+        // `call_context` içinde 'trasport' -> 'transport' düzeltmesi zaten yapılmıştı.
+        // Bu yüzden burada gelen `record_route_header` zaten doğru 'transport' kelimesini içeriyor.
+        // Artık ek bir temizlik yapmadan, geldiği gibi kullanıyoruz.
+        lines.push(format!("Route: {}", route));
     }
     // =========================================================================
 
