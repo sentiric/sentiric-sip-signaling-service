@@ -53,9 +53,8 @@ async fn main() -> Result<(), ServiceError> {
     let sock = Arc::new(sock);
     info!(address = %config.sip_listen_addr, "✅ SIP dinleyici başlatıldı.");
 
-    // DÜZELTME: `config` parametresi eklendi.
     let termination_task = tokio::spawn(rabbitmq::terminate::listen_for_termination_requests(
-        Arc::clone(&sock), Arc::clone(&rabbit_channel), Arc::clone(&active_calls), Arc::clone(&config)
+        Arc::clone(&sock), Arc::clone(&rabbit_channel), Arc::clone(&active_calls)
     ));
     let cleanup_task = tokio::spawn(cleanup_old_transactions(Arc::clone(&active_calls)));
     

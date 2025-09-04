@@ -3,6 +3,7 @@ use crate::error::ServiceError;
 use crate::sip::utils;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use tracing::warn; // YENİ
 
 #[derive(Debug, Clone)]
 pub struct CallContext {
@@ -25,9 +26,34 @@ impl CallContext {
         let header_part = parts.get(0).unwrap_or(&"");
         let raw_body = parts.get(1).unwrap_or(&"").to_string();
         
-        let headers = utils::parse_complex_headers(header_part)
+        let mut headers = utils::parse_complex_headers(header_part)
             .ok_or_else(|| ServiceError::SipParse("SIP başlıkları ayrıştırılamadı".to_string()))?;
             
+        // =========================================================================
+        //   PRAGMATİK UYUMLULUK DÜZELTMESİ (OPERATÖR KAYNAKLI)
+        // =========================================================================
+        // Bazı telekom operatörlerinin (testlerde Sippy Softswitch v2021-PRODUCTION.408)
+        // `Record-Route` başlığında "transport" yerine "trasport" yazım hatası yaptığı gözlemlenmiştir.
+        // Bu hatalı parametre, giden BYE isteğimizde `Route` başlığı olarak geri
+        // gönderildiğinde operatör tarafından reddedilmekteydi (`475 Bad URI`).
+        // Gateway olarak, bu bilinen hatayı proaktif olarak düzelterek uyumluluğu artırıyoruz.
+        if let Some(rr) = headers.get_mut("Record-Route") {
+            if rr.contains("trasport=") {
+                // TS_KAREL_TRUST ve TS_ROITEL_TRUST operatörleri (şimdilik bilinenler)
+                // `trasport=udp` şeklinde hatalı bir Record-Route başlığı gönderiyor.
+                // Bu hatayı düzeltiyoruz.
+                let fixed_rr = rr.replace("trasport=", "transport=");
+                warn!(
+                    source = %remote_addr,
+                    original_record_route = %rr,
+                    fixed_record_route = %fixed_rr,
+                    "Gelen Record-Route başlığında 'trasport' yazım hatası tespit edildi, düzeltiliyor."
+                );
+                *rr = fixed_rr;
+            }
+        }
+        // =========================================================================
+        
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         let from_header = headers.get("From").cloned().unwrap_or_default();
         let to_header = headers.get("To").cloned().unwrap_or_default();

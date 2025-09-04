@@ -1,6 +1,5 @@
 // File: src/rabbitmq/terminate.rs
 use super::connection::RABBITMQ_EXCHANGE_NAME;
-use crate::config::AppConfig;
 use crate::error::ServiceError;
 use crate::sip::utils::create_bye_request;
 use crate::state::ActiveCalls;
@@ -25,7 +24,6 @@ pub async fn listen_for_termination_requests(
     sock: Arc<UdpSocket>,
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
-    config: Arc<AppConfig>,
 ) {
     info!(queue = TERMINATION_QUEUE_NAME, "Çağrı sonlandırma kuyruğu dinleniyor...");
     let consumer = match setup_consumer(&rabbit_channel).await {
@@ -35,7 +33,7 @@ pub async fn listen_for_termination_requests(
             return;
         }
     };
-    process_messages(consumer, sock, rabbit_channel, active_calls, config).await;
+    process_messages(consumer, sock, rabbit_channel, active_calls).await;
 }
 
 async fn setup_consumer(channel: &LapinChannel) -> Result<Consumer, ServiceError> {
@@ -50,26 +48,24 @@ async fn process_messages(
     sock: Arc<UdpSocket>,
     rabbit_channel: Arc<LapinChannel>,
     active_calls: ActiveCalls,
-    config: Arc<AppConfig>,
 ) {
     while let Some(delivery) = consumer.next().await {
         if let Ok(delivery) = delivery {
             let _ = delivery.ack(BasicAckOptions::default()).await;
             match serde_json::from_slice::<TerminationRequest>(&delivery.data) {
-                Ok(req) => handle_termination_request(req.call_id, &sock, &rabbit_channel, &active_calls, &config).await,
+                Ok(req) => handle_termination_request(req.call_id, &sock, &rabbit_channel, &active_calls).await,
                 Err(e) => error!(error = %e, "Geçersiz sonlandırma isteği formatı."),
             }
         }
     }
 }
 
-#[instrument(skip_all)]
+#[instrument(skip(sock, rabbit_channel, active_calls))]
 async fn handle_termination_request(
     call_id: String,
     sock: &Arc<UdpSocket>,
     rabbit_channel: &Arc<LapinChannel>,
     active_calls: &ActiveCalls,
-    config: &Arc<AppConfig>,
 ) {
     info!("Çağrı sonlandırma isteği işleniyor.");
     if let Some(call_info) = active_calls.lock().await.remove(&call_id) {
@@ -77,8 +73,7 @@ async fn handle_termination_request(
         let _enter = span.enter();
         info!("Aktif çağrı bulundu, BYE paketi oluşturuluyor ve gönderiliyor.");
         
-        // DÜZELTME: `config` parametresi eklendi.
-        let bye_request = create_bye_request(&call_info, config);
+        let bye_request = create_bye_request(&call_info);
         
         if let Err(e) = sock.send_to(bye_request.as_bytes(), call_info.remote_addr).await {
             error!(error = %e, "BYE paketi gönderilemedi.");
