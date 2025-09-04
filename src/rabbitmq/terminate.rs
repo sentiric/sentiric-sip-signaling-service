@@ -10,7 +10,6 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{error, info, instrument, warn};
 
-// ... (dosyanın geri kalanı aynı)
 const TERMINATION_QUEUE_NAME: &str = "sentiric.signaling.terminate";
 const TERMINATION_ROUTING_KEY: &str = "call.terminate.request";
 
@@ -27,7 +26,6 @@ pub async fn listen_for_termination_requests(
     active_calls: ActiveCalls,
 ) {
     info!(queue = TERMINATION_QUEUE_NAME, "Çağrı sonlandırma kuyruğu dinleniyor...");
-
     let consumer = match setup_consumer(&rabbit_channel).await {
         Ok(c) => c,
         Err(e) => {
@@ -35,7 +33,6 @@ pub async fn listen_for_termination_requests(
             return;
         }
     };
-
     process_messages(consumer, sock, rabbit_channel, active_calls).await;
 }
 
@@ -75,18 +72,18 @@ async fn handle_termination_request(
         let span = tracing::info_span!("terminate_call", trace_id = %call_info.trace_id, remote_addr = %call_info.remote_addr);
         let _enter = span.enter();
         info!("Aktif çağrı bulundu, BYE paketi oluşturuluyor ve gönderiliyor.");
-        let bye_request = create_bye_request(&call_info, &call_info.to_tag);
+        
+        let bye_request = create_bye_request(&call_info);
+        
         if let Err(e) = sock.send_to(bye_request.as_bytes(), call_info.remote_addr).await {
             error!(error = %e, "BYE paketi gönderilemedi.");
         } else {
             info!("BYE paketi başarıyla gönderildi.");
         }
+
         let event_payload = serde_json::json!({
-            "eventType": "call.ended",
-            "traceId": call_info.trace_id,
-            "callId": call_id,
-            "reason": "terminated_by_request",
-            "timestamp": chrono::Utc::now().to_rfc3339()
+            "eventType": "call.ended", "traceId": call_info.trace_id, "callId": call_id,
+            "reason": "terminated_by_request", "timestamp": chrono::Utc::now().to_rfc3339()
         });
         if let Err(e) = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "call.ended", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await {
             error!(error = %e, "'call.ended' olayı yayınlanırken hata oluştu.");
