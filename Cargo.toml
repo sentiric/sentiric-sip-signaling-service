@@ -23,10 +23,8 @@ rand_distr = "0.4.3"
 futures-util = "0.3"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
+thiserror = "1.0" # <-- YENİ EKLENDİ
 
-# --- DOKÜMANTASYONA DAYALI NİHAİ ÇÖZÜM ---
-# Tokio ile birlikte Rustls tabanlı TLS desteğini etkinleştirmek için gereken
-# tek ve doğru birleşik özellik `tokio-rustls-comp`'tur.
 redis = { version = "0.32", features = ["tokio-rustls-comp"] }
 
 [dependencies.sentiric-contracts]
