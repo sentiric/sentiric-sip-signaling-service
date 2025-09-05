@@ -95,39 +95,39 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
     }
 }
 
-// GÜNCELLENDİ: Fonksiyon imzası AppConfig alacak şekilde değişti.
+#[instrument(skip(call_info, config))]
 fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppConfig) -> String {
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
+    
+    // --- KRİTİK DEĞİŞİKLİK BURADA ---
+    // Request-URI olarak geçici Contact başlığı yerine, diyaloğun ana To başlığını kullanıyoruz.
+    // Bu, bazı B2BUA'larla uyumluluğu artırır.
+    let request_uri = &call_info.to_header;
+    // --- DEĞİŞİKLİK SONU ---
+
     let mut lines = Vec::new();
     
-    lines.push(format!("BYE {} SIP/2.0", call_info.contact_header));
+    lines.push(format!("BYE {} SIP/2.0", request_uri));
     
     let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
+    // NOT: remote_addr burada gateway'in adresi (172.18.0.1:...). Bu doğru bir davranış.
     lines.push(format!("Via: SIP/2.0/UDP {};branch=z9hG4bK.{}", call_info.remote_addr, branch));
     
     lines.push(format!("Max-Forwards: 70"));
     
-    // =========================================================================
-    //   NİHAİ DÜZELTME: Sadece 'trasport' hatasını düzelt, 'ftag' gibi
-    //   diğer parametrelere dokunma.
-    // =========================================================================
+    // `call_context` içinde `trasport` hatasına dokunmadığımız için,
+    // burada `record_route_header` olduğu gibi kullanılabilir ve doğru (yani hatalı) olacaktır.
     if let Some(route) = &call_info.record_route_header {
-        // `call_context` içinde 'trasport' -> 'transport' düzeltmesi zaten yapılmıştı.
-        // Bu yüzden burada gelen `record_route_header` zaten doğru 'transport' kelimesini içeriyor.
-        // Artık ek bir temizlik yapmadan, geldiği gibi kullanıyoruz.
         lines.push(format!("Route: {}", route));
     }
-    // =========================================================================
 
+    // From ve To başlıkları diyalog için ters çevrilir.
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
     lines.push(format!("Call-ID: {}", call_info.call_id));
     lines.push(format!("CSeq: {} BYE", cseq_num));
-    
-    // GÜNCELLENDİ: User-Agent başlığı artık dinamik olarak AppConfig'den geliyor.
     lines.push(format!("User-Agent: Sentiric Signaling Service v{}", config.service_version));
-    
     lines.push(format!("Content-Length: 0"));
 
     lines.join("\r\n") + "\r\n\r\n"
