@@ -99,11 +99,10 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
 fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppConfig) -> String {
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
-    
-    // --- KRİTİK DEĞİŞİKLİK BURADA ---
-    // Request-URI olarak geçici Contact başlığı yerine, diyaloğun ana To başlığını kullanıyoruz.
-    // Bu, bazı B2BUA'larla uyumluluğu artırır.
-    let request_uri = &call_info.to_header;
+
+    // --- KRİTİK DÜZELTME: Request-URI'yi TEKRAR Contact başlığından alıyoruz ---
+    // Bu, SIP standartlarına uygundur ve BYE'nin doğru hedefe gitmesini sağlar.
+    let request_uri = &call_info.contact_header;
     // --- DEĞİŞİKLİK SONU ---
 
     let mut lines = Vec::new();
@@ -111,13 +110,12 @@ fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppCon
     lines.push(format!("BYE {} SIP/2.0", request_uri));
     
     let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
-    // NOT: remote_addr burada gateway'in adresi (172.18.0.1:...). Bu doğru bir davranış.
     lines.push(format!("Via: SIP/2.0/UDP {};branch=z9hG4bK.{}", call_info.remote_addr, branch));
     
     lines.push(format!("Max-Forwards: 70"));
     
-    // `call_context` içinde `trasport` hatasına dokunmadığımız için,
-    // burada `record_route_header` olduğu gibi kullanılabilir ve doğru (yani hatalı) olacaktır.
+    // `call_context` içinde 'trasport' hatasına dokunmadığımız için,
+    // burada `record_route_header` olduğu gibi kullanılabilir ve sağlayıcının beklediği gibi olacaktır.
     if let Some(route) = &call_info.record_route_header {
         lines.push(format!("Route: {}", route));
     }
@@ -132,6 +130,7 @@ fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppCon
 
     lines.join("\r\n") + "\r\n\r\n"
 }
+
 
 const TERMINATION_QUEUE_NAME: &str = "sentiric.signaling.terminate";
 const TERMINATION_ROUTING_KEY: &str = "call.terminate.request";
