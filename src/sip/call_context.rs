@@ -3,7 +3,7 @@ use crate::error::ServiceError;
 use crate::sip::utils;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use tracing::warn; // YENİ
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct CallContext {
@@ -28,7 +28,7 @@ impl CallContext {
         
         let mut headers = utils::parse_complex_headers(header_part)
             .ok_or_else(|| ServiceError::SipParse("SIP başlıkları ayrıştırılamadı".to_string()))?;
-            
+        
         // =========================================================================
         //   PRAGMATİK UYUMLULUK DÜZELTMESİ (OPERATÖR KAYNAKLI)
         // =========================================================================
@@ -37,22 +37,27 @@ impl CallContext {
         // Bu hatalı parametre, giden BYE isteğimizde `Route` başlığı olarak geri
         // gönderildiğinde operatör tarafından reddedilmekteydi (`475 Bad URI`).
         // Gateway olarak, bu bilinen hatayı proaktif olarak düzelterek uyumluluğu artırıyoruz.
-        if let Some(rr) = headers.get_mut("Record-Route") {
-            if rr.contains("trasport=") {
-                // TS_KAREL_TRUST ve TS_ROITEL_TRUST operatörleri (şimdilik bilinenler)
-                // `trasport=udp` şeklinde hatalı bir Record-Route başlığı gönderiyor.
-                // Bu hatayı düzeltiyoruz.
-                let fixed_rr = rr.replace("trasport=", "transport=");
-                warn!(
-                    source = %remote_addr,
-                    original_record_route = %rr,
-                    fixed_record_route = %fixed_rr,
-                    "Gelen Record-Route başlığında 'trasport' yazım hatası tespit edildi, düzeltiliyor."
-                );
-                *rr = fixed_rr;
-            }
-        }
-        // =========================================================================
+
+        // Telekom sağlayıcısının 'trasport' yazım hatasına uyum sağlamak için bu bloğu geçici olarak devre dışı bırakıyoruz.
+        // Bu, giden BYE isteğindeki Route başlığının, sağlayıcının beklediği hatalı formatla eşleşmesini sağlayacaktır.
+        // if let Some(rr) = headers.get_mut("Record-Route") {
+        //     if rr.contains("trasport=") {
+        //         // TS_KAREL_TRUST ve TS_ROITEL_TRUST operatörleri (şimdilik bilinenler)
+        //         // `trasport=udp` şeklinde hatalı bir Record-Route başlığı gönderiyor.
+        //         // Bu hatayı düzeltiyoruz.
+        //         let fixed_rr = rr.replace("trasport=", "transport=");
+        //         warn!(
+        //             source = %remote_addr,
+        //             original_record_route = %rr,
+        //             fixed_record_route = %fixed_rr,
+        //             "Gelen Record-Route başlığında 'trasport' yazım hatası tespit edildi, düzeltiliyor."
+        //         );
+        //         *rr = fixed_rr;
+        //     }
+        // }
+        
+        // =========================================================================            
+
         
         let call_id = headers.get("Call-ID").cloned().unwrap_or_default();
         let from_header = headers.get("From").cloned().unwrap_or_default();
