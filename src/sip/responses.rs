@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tracing::debug;
 
-// Bu fonksiyonlar, SIP yanıtı oluşturma mantığını merkezileştirir ve temizler.
 
 pub fn build_180_ringing(
     response_headers: &HashMap<String, String>,
@@ -30,7 +29,6 @@ pub fn build_200_ok_with_sdp(
     create_response("200 OK", response_headers, Some(&sdp_body), config, remote_addr)
 }
 
-// DÜZELTME: Bu fonksiyon E0603 hatasını çözmek için `pub` yapıldı.
 // Diğer modüllerin (bye, register) genel yanıtlar oluşturması için gereklidir.
 pub fn create_response(
     status_line: &str,
@@ -51,6 +49,9 @@ pub fn create_response(
     let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
     let www_authenticate_line = headers.get("WWW-Authenticate").map(|val| format!("WWW-Authenticate: {}\r\n", val)).unwrap_or_default();
     
+    // GÜNCELLENDİ: Server başlığı artık dinamik olarak AppConfig'den geliyor.
+    let server_header = format!("Server: Sentiric Signaling Service v{}", config.service_version);
+
     let response_string = format!(
         "SIP/2.0 {}\r\n{}\
         From: {}\r\n\
@@ -59,14 +60,14 @@ pub fn create_response(
         CSeq: {}\r\n\
         {}\
         Contact: {}\r\n\
-        Server: Sentiric Signaling Service v1.0\r\n\
+        {}\r\n\
         Content-Length: {}\r\n\
         {}\r\n\
         {}",
         status_line, via_line, from_header, to_header,
         headers.get("Call-ID").unwrap_or(&empty_string),
         headers.get("CSeq").unwrap_or(&empty_string),
-        www_authenticate_line, contact_header, body.len(),
+        www_authenticate_line, contact_header, server_header, body.len(),
         if sdp.is_some() { "Content-Type: application/sdp\r\n" } else { "" },
         body
     );
