@@ -60,4 +60,25 @@ sequenceDiagram
         Note over Signaling: Asenkron Dünyayı Tetikle
         Signaling->>RabbitMQ: `call.started` ve `call.answered` olaylarını yayınla
     end
+
 ```
+
+---
+
+## 3. Mimari Temelleri ve Kararlar
+
+Bu servisin mevcut mimarisi, belirli zorlukları çözmek için alınan bilinçli kararlara dayanmaktadır.
+
+### 3.1. Dayanıklı ve Durum Odaklı Başlangıç
+
+*   **Problem:** Mikroservis ortamlarında, servislerin başlama sırası garanti edilemez. `sip-signaling`, bağımlı olduğu `user-service`'ten önce başlayabilir. Eğer servis, başlarken tüm bağlantıları kuramazsa ve kendini kapatırsa, gelen çağrılar yanıtsız kalır (timeout).
+*   **Karar:** Servis, **iki aşamalı bir başlangıç** modeli benimser.
+    1.  **Aşama (Anında):** UDP soketini hemen başlatır ve dış dünyayı dinlemeye başlar.
+    2.  **Aşama (Arka Plan):** Ayrı bir `task`'te, kritik bağımlılıklara (gRPC, Redis) bağlanmayı tekrar deneme (retry) mantığıyla dener.
+*   **Sonuç:** Bu model sayesinde servis, bağımlılıkları hazır olmasa bile **her zaman yanıt verir** (`503`), ancak sadece tüm sistem işlevsel olduğunda çağrıları kabul eder (`200 OK`). Bu, hem hızı hem de güvenilirliği en üst düzeye çıkarır.
+
+### 3.2. Merkezi Durum Yönetimi (`AppState`)
+
+*   **Problem:** Her istekte yeniden gRPC bağlantısı kurmak, Redis veya RabbitMQ istemcisi oluşturmak son derece verimsizdir ve performansı düşürür.
+*   **Karar:** Servis başlarken (arka planda), tüm paylaşılan kaynaklar (`AppConfig`, gRPC istemcileri, bağlantı havuzları) **sadece bir kez** oluşturulur ve `Arc<AppState>` adında merkezi bir yapıda saklanır.
+*   **Sonuç:** Bu yapı, tüm handler fonksiyonlarına klonlanarak verimli bir şekilde geçirilir. Bu, kaynak israfını önler, performansı artırır ve kodun bağımlılık yönetimini büyük ölçüde basitleştirir.
