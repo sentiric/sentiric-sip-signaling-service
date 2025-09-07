@@ -3,6 +3,7 @@
 use super::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::app_state::AppState;
 use crate::error::ServiceError;
+use crate::sip::utils; // utils'i import ediyoruz
 use crate::state::ActiveCallInfo;
 use futures_util::StreamExt;
 use lapin::{options::*, types::FieldTable, BasicProperties, Channel as LapinChannel, Consumer};
@@ -11,7 +12,6 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{error, info, instrument, warn};
-
 
 
 #[derive(Deserialize, Debug)]
@@ -100,27 +100,21 @@ fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppCon
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
 
-    // --- KRİTİK DÜZELTME: Request-URI'yi TEKRAR Contact başlığından alıyoruz ---
-    // Bu, SIP standartlarına uygundur ve BYE'nin doğru hedefe gitmesini sağlar.
-    let request_uri = &call_info.contact_header;
-    // --- DEĞİŞİKLİK SONU ---
+    // `Contact` başlığından tam URI'ı alıyoruz. Gateway bu URI'a göre yönlendirme yapacak.
+    let request_uri = utils::get_uri_from_header(&call_info.contact_header)
+        .unwrap_or_else(|| call_info.contact_header.clone());
 
     let mut lines = Vec::new();
     
     lines.push(format!("BYE {} SIP/2.0", request_uri));
     
     let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
-    lines.push(format!("Via: SIP/2.0/UDP {};branch=z9hG4bK.{}", call_info.remote_addr, branch));
+    lines.push(format!("Via: SIP/2.0/UDP {}:{};branch=z9hG4bK.{}", 
+        config.sip_listen_addr.ip(), 
+        config.sip_listen_addr.port(), 
+        branch));
     
     lines.push(format!("Max-Forwards: 70"));
-    
-    // `call_context` içinde 'trasport' hatasına dokunmadığımız için,
-    // burada `record_route_header` olduğu gibi kullanılabilir ve sağlayıcının beklediği gibi olacaktır.
-    if let Some(route) = &call_info.record_route_header {
-        lines.push(format!("Route: {}", route));
-    }
-
-    // From ve To başlıkları diyalog için ters çevrilir.
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
     lines.push(format!("Call-ID: {}", call_info.call_id));
@@ -130,7 +124,6 @@ fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppCon
 
     lines.join("\r\n") + "\r\n\r\n"
 }
-
 
 const TERMINATION_QUEUE_NAME: &str = "sentiric.signaling.terminate";
 const TERMINATION_ROUTING_KEY: &str = "call.terminate.request";

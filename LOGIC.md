@@ -1,84 +1,67 @@
 # 🚦 Sentiric SIP Signaling Service - Mantık ve Akış Mimarisi
 
-**Belge Amacı:** Bu doküman, `sip-signaling-service`'in Sentiric platformunun **dayanıklı çağrı kurulum orkestratörü** olarak rolünü, bir SIP çağrısını nasıl hayata geçirdiğini ve platformun senkron dünyası (`gRPC`) ile asenkron dünyası (`RabbitMQ`) arasında nasıl bir köprü kurduğunu açıklar.
+**Belge Amacı:** Bu doküman, `sip-signaling-service`'in Sentiric platformunun **"İçişleri Bakanı"** olarak rolünü, bir SIP çağrısını hayata geçirmek için platform içindeki diğer servisleri nasıl orkestra ettiğini ve asenkron dünya ile nasıl köprü kurduğunu açıklar.
 
 ---
 
-## 1. Stratejik Rol: "Dayanıklı Orkestra Şefi"
+## 1. Stratejik Rol: "İç Orkestra Şefi"
 
-Bu servis, gelen bir SIP çağrısını hayata geçirmek için gereken tüm adımları yöneten merkezi bir beyindir. Ancak görevi bundan daha fazlasıdır; sistemin geri kalanı henüz hazır olmasa bile dış dünyaya karşı **profesyonel ve öngörülebilir** bir duruş sergiler.
+Bu servis, **yalnızca ve sadece** `sip-gateway-service`'ten gelen temiz, basit ve güvenli SIP isteklerini işler. Dış dünyanın karmaşık ağ ve protokol sorunlarından (NAT, çoklu `Via` başlıkları, standart dışı parametreler) tamamen soyutlanmıştır.
 
-1.  **Hava Trafik Kontrolörü (Servis Başlarken):** Servis, başlar başlamaz SIP portunu dinlemeye alır. Ancak arka planda kritik bağımlılıklarının (gRPC servisleri, Redis) hazır olmasını bekler. Bu bekleme süresi boyunca gelen çağrıları (`INVITE`) yanıtsız bırakmaz; bunun yerine anında bir **`503 Service Unavailable`** yanıtı ile "kule henüz tam operasyonel değil, lütfen bekleme paternine girin" mesajı verir. Bu, telekom dünyasının "asla yanıtsız bırakma" ilkesini karşılar.
-
-2.  **Orkestra Şefi (Servis Tam İşlevselken):** Tüm bağımlılıklar hazır olduğunda, servis "tam işlevsel" moda geçer. Artık gelen bir `INVITE` isteğini alıp, bu çağrının canlıya geçmesi için gereken tüm adımları **anlık ve sıralı** olarak yönetir. `dialplan`, `user` ve `media` servislerini bir orkestra şefi gibi yöneterek çağrıyı kurar.
-
-3.  **Postacı (Çağrı Kurulduktan Sonra):** Çağrı başarıyla kurulduğunda, görevi platformun asenkron beyni olan `agent-service`'e devreder. Bunu, `call.started` olayını içeren bir mektubu `RabbitMQ` posta kutusuna atarak yapar. Aynı şekilde, çağrı bittiğinde de `call.ended` mektubunu atar.
-
----
+Tek görevi, gelen temiz bir `INVITE` isteğini alıp, bu çağrının canlıya geçmesi için gereken tüm adımları **anlık ve sıralı** olarak yönetmektir. `dialplan`, `user` ve `media` servislerini bir orkestra şefi gibi yöneterek çağrıyı kurar.
 
 ## 2. Uçtan Uca Akış: Bir `INVITE` İsteğinin Yaşam Döngüsü
 
-Aşağıdaki diyagram, servisin iki temel durumundaki davranışını gösterir.
+Aşağıdaki diyagram, servisin `sip-gateway` tarafından basitleştirilmiş bir `INVITE` aldıktan sonraki adımlarını gösterir.
 
 ```mermaid
 sequenceDiagram
-    participant Client as SIP İstemcisi
     participant Gateway as SIP Gateway
     participant Signaling as SIP Signaling
+    participant Dialplan as Dialplan Service
+    participant User as User Service
+    participant Media as Media Service
+    participant RabbitMQ
     
-    Client->>Gateway: INVITE
-    Gateway->>Signaling: INVITE
+    Gateway->>Signaling: INVITE (Temiz, Tek Via'lı)
+    Signaling-->>Gateway: 100 Trying
 
-    alt Servis Hazır Değil (Initializing)
-        Signaling-->>Gateway: 503 Service Unavailable
-        Gateway-->>Client: 503 Service Unavailable
-    else Servis Hazır (Ready)
-        participant Dialplan as Dialplan Service
-        participant User as User Service
-        participant Media as Media Service
-        participant RabbitMQ
-        
-        Signaling-->>Gateway: 100 Trying
-        Gateway-->>Client: 100 Trying
+    Note over Signaling: Senkron Orkestrasyon Başlıyor
+    Signaling->>Dialplan: ResolveDialplan(...)
+    Dialplan->>User: FindUserByContact(...)
+    User-->>Dialplan: User Bilgisi
+    Dialplan-->>Signaling: ResolveDialplanResponse (Plan: START_AI_CONVERSATION)
 
-        Note over Signaling: Senkron Orkestrasyon Başlıyor
-        Signaling->>Dialplan: ResolveDialplan(...)
-        Dialplan->>User: FindUserByContact(...)
-        User-->>Dialplan: User Bilgisi
-        Dialplan-->>Signaling: ResolveDialplanResponse (Plan: START_AI_CONVERSATION)
+    Signaling->>Media: AllocatePort(...)
+    Media-->>Signaling: AllocatePortResponse (Port: 10100)
 
-        Signaling->>Media: AllocatePort(...)
-        Media-->>Signaling: AllocatePortResponse (Port: 10100)
-
-        Note over Signaling: Orkestrasyon Başarılı. Yanıtı Oluştur.
-        Signaling-->>Gateway: 180 Ringing / 200 OK (with SDP)
-        Gateway-->>Client: 180 Ringing / 200 OK (with SDP)
-        
-        Client->>Gateway: ACK
-        Gateway->>Signaling: ACK
-        
-        Note over Signaling: Asenkron Dünyayı Tetikle
-        Signaling->>RabbitMQ: `call.started` ve `call.answered` olaylarını yayınla
-    end
-
+    Note over Signaling: Orkestrasyon Başarılı. Yanıtı Oluştur.
+    Signaling-->>Gateway: 200 OK (Basit, Tek Via'lı)
+    
+    Note over Gateway: Bu basit yanıtı alır, <br> orijinal `Via` listesiyle zenginleştirir <br> ve operatöre gönderir.
+    
+    Gateway->>Signaling: ACK
+    
+    Note over Signaling: Asenkron Dünyayı Tetikle
+    Signaling->>RabbitMQ: `call.started` ve `call.answered` olaylarını yayınla
 ```
-
----
 
 ## 3. Mimari Temelleri ve Kararlar
 
-Bu servisin mevcut mimarisi, belirli zorlukları çözmek için alınan bilinçli kararlara dayanmaktadır.
+### 3.1. Sorumlulukların Ayrıştırılması (`Strateji B+`)
 
-### 3.1. Dayanıklı ve Durum Odaklı Başlangıç
+*   **Problem:** Önceki mimaride, hem `gateway` hem de `signaling` servisleri, operatör uyumluluğu için karmaşık SIP başlıklarını (örn: `Via`, `Record-Route`) yönetmeye çalışıyordu. Bu, kod tekrarına, bakım zorluğuna ve tutarsızlıklara yol açıyordu.
+*   **Karar:** Tüm dış dünya SIP karmaşıklığı yönetimi sorumluluğu **tek bir noktaya, `sip-gateway`'e** verildi. `sip-signaling-service` artık bu detaylarla ilgilenmez.
+*   **Sonuç:** `signaling-service`'in kod tabanı önemli ölçüde basitleşti, daha okunabilir ve test edilebilir hale geldi. Servis artık sadece kendi ana görevi olan iç orkestrasyona odaklanıyor.
 
-*   **Problem:** Mikroservis ortamlarında, servislerin başlama sırası garanti edilemez. `sip-signaling`, bağımlı olduğu `user-service`'ten önce başlayabilir. Eğer servis, başlarken tüm bağlantıları kuramazsa ve kendini kapatırsa, gelen çağrılar yanıtsız kalır (timeout).
-*   **Karar:** Servis, **iki aşamalı bir başlangıç** modeli benimser.
-    1.  **Aşama (Anında):** UDP soketini hemen başlatır ve dış dünyayı dinlemeye başlar.
-    2.  **Aşama (Arka Plan):** Ayrı bir `task`'te, kritik bağımlılıklara (gRPC, Redis) bağlanmayı tekrar deneme (retry) mantığıyla dener.
-*   **Sonuç:** Bu model sayesinde servis, bağımlılıkları hazır olmasa bile **her zaman yanıt verir** (`503`), ancak sadece tüm sistem işlevsel olduğunda çağrıları kabul eder (`200 OK`). Bu, hem hızı hem de güvenilirliği en üst düzeye çıkarır.
+### 3.2. Dayanıklı ve Durum Odaklı Başlangıç
 
-### 3.2. Merkezi Durum Yönetimi (`AppState`)
+*   **Problem:** Mikroservis ortamlarında, servislerin başlama sırası garanti edilemez.
+*   **Karar:** Servis, **iki aşamalı bir başlangıç** modeli benimser: Önce UDP portunu dinler ve `503 Service Unavailable` yanıtı verir, ardından arka planda kritik bağımlılıklara (gRPC, Redis) bağlanmayı dener. Sadece tüm bağlantılar başarılı olduğunda tam işlevsel moda geçer.
+*   **Sonuç:** Bu model, sistemin hem hızlı yanıt vermesini hem de kararlı olmasını sağlar.
 
-*   **Problem:** Her istekte yeniden gRPC bağlantısı kurmak, Redis veya RabbitMQ istemcisi oluşturmak son derece verimsizdir ve performansı düşürür.
-*   **Karar:** Servis başlarken (arka planda), tüm paylaşılan kaynaklar (`AppConfig`, gRPC istemcileri, bağlantı havuzları) **sadece bir kez** oluşturulur ve `Arc<AppState>` adında merkezi bir yapıda saklanır.
-*   **Sonuç:** Bu yapı, tüm handler fonksiyonlarına klonlanarak verimli bir şekilde geçirilir. Bu, kaynak israfını önler, performansı artırır ve kodun bağımlılık yönetimini büyük ölçüde basitleştirir.
+### 3.3. Merkezi Durum Yönetimi (`AppState`)
+
+*   **Problem:** Her istekte yeniden kaynak (gRPC istemcileri, bağlantı havuzları) oluşturmak verimsizdir.
+*   **Karar:** Tüm paylaşılan kaynaklar, servis başlarken sadece bir kez oluşturulur ve `Arc<AppState>` adında merkezi bir yapıda saklanır.
+*   **Sonuç:** Kaynak israfı önlenir, performans artar ve kodun bağımlılık yönetimi basitleşir.

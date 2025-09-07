@@ -1,4 +1,5 @@
 // File: src/sip/utils.rs
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
@@ -6,36 +7,34 @@ use tracing::{info, warn};
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 
+/// Gelen SIP isteğindeki başlıkları basit bir HashMap'e ayrıştırır.
+/// Strateji B+ gereği, bu fonksiyon artık çoklu Via veya Record-Route başlıklarını
+/// işlemek zorunda değildir. Bu sorumluluk `sip-gateway-service`'e aittir.
 pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut headers = HashMap::new();
-    let mut via_headers = Vec::new();
-    let mut record_route_headers = Vec::new();
     for line in request.lines() {
-        if line.is_empty() { break; }
+        if line.is_empty() {
+            break;
+        }
         if let Some((key, value)) = line.split_once(':') {
-            let key_trimmed = key.trim();
-            let value_trimmed = value.trim().to_string();
-            match key_trimmed.to_lowercase().as_str() {
-                "via" | "v" => via_headers.push(value_trimmed),
-                "record-route" => record_route_headers.push(value_trimmed),
-                _ => { headers.insert(key_trimmed.to_string(), value_trimmed); }
-            }
+            headers.insert(key.trim().to_string(), value.trim().to_string());
         }
     }
-    if !via_headers.is_empty() {
-        headers.insert("Via".to_string(), via_headers.join(", "));
-        if !record_route_headers.is_empty() {
-            headers.insert("Record-Route".to_string(), record_route_headers.join(", "));
-        }
+    
+    if headers.contains_key("Via") {
         Some(headers)
     } else {
-        warn!("Gelen SIP isteğinde Via başlığı bulunamadı.");
+        warn!("Gelen SIP isteğinde Via başlığı bulunamadı (Gateway'den gelmemiş olabilir).");
         None
     }
 }
 
-// DÜZELTME: Bu fonksiyon artık kullanılmadığı için kaldırıldı.
-// pub fn create_bye_request(...) { ... }
+// YENİ EKLENDİ: Bu fonksiyon derleme hatasını düzeltmek için geri eklendi.
+// 'Contact' gibi başlıkların içinden URI'ı (<sip:...>) çıkarmak için kullanılır.
+pub fn get_uri_from_header(header: &str) -> Option<String> {
+    header.find('<').and_then(|start| header.find('>').map(|end| header[start + 1..end].to_string()))
+}
+
 
 pub fn extract_user_from_uri(uri: &str) -> Option<String> {
     USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| {

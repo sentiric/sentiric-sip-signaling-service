@@ -18,6 +18,7 @@ pub struct ActiveCallInfo {
     pub from_header: String,
     pub to_header: String,
     pub contact_header: String,
+    #[allow(dead_code)] // Bu alan gelecekteki yönlendirme senaryoları için saklanıyor.
     pub record_route_header: Option<String>,
     pub raw_body: String,
 }
