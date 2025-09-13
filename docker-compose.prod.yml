@@ -16,12 +16,12 @@ services:
   sip-signaling:
     image: ghcr.io/sentiric/sentiric-sip-signaling-service:${TAG:-latest}
     env_file: ["${ENV_FILE_PATH}"]
-    ports: 
-      - "5061:${SIP_SIGNALING_UDP_PORT:-13024}/udp"
     volumes: 
       - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
       - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
-      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"    
+    ports: 
+      - "5061:${SIP_SIGNALING_UDP_PORT:-13024}/udp"
     networks:
       sentiric-net:
         ipv4_address: ${SIP_SIGNALING_IPV4_ADDRESS}
