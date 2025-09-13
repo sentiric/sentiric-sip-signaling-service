@@ -25,10 +25,11 @@ Cargo.lock # (duruma göre, açıklaması aşağıda)
 *.gcno
 *.gcov
 
-# Ortam dosyaları (gizli kalması gereken)
+# Ortam dosyaları
 .env
 .env.*
 
-# Docker-compose vs.
+# Docker compose 
 docker-compose.yml
-docker-compose.override.yml
+docker-compose.*.yml
+

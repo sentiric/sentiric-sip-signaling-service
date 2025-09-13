@@ -20,14 +20,14 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Ortam değişkenleri
-# .gitignore
+# Ortam dosyaları
 .env
 .env.*
-!.env.example
-.profile.state
+!.env.example          # örnek config dosyasını tut
+
+# Çalışma zamanı veya geçici dosyalar
 .env.generated
-node_modules
+.profile.state
 
 # Loglar
 *.log
