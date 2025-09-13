@@ -1,0 +1,33 @@
+# docker-compose.prod.yml
+# Service Üretim ortamı
+
+networks:
+  sentiric-net:
+    name: "${NETWORK_NAME:-sentiric-net}"
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET}
+          gateway: ${NETWORK_GATEWAY}
+
+services:
+  # [capability-telephony]: Yetenek Servisleri (Capability Layer)
+  # --------------------------------------------------  
+  sip-signaling:
+    image: ghcr.io/sentiric/sentiric-sip-signaling-service:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    ports: 
+      - "5061:${SIP_SIGNALING_UDP_PORT:-13024}/udp"
+    volumes: 
+      - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+    networks:
+      sentiric-net:
+        ipv4_address: ${SIP_SIGNALING_IPV4_ADDRESS}
+    restart: always
+    # depends_on: { 
+    #   rabbitmq: { condition: service_healthy },
+    #   media-service: { condition: service_healthy },
+    #   redis: { condition: service_healthy },
+    # }      

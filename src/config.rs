@@ -37,8 +37,8 @@ impl fmt::Debug for AppConfig {
 impl AppConfig {
     pub fn load_from_env() -> Result<Self, Box<dyn Error>> {
         dotenv::dotenv().ok();
-        let sip_host = env::var("SIP_SIGNALING_SERVICE_LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let sip_port_str = env::var("SIP_SIGNALING_SERVICE_PORT").unwrap_or_else(|_| "5060".to_string());
+        let sip_host = env::var("SIP_SIGNALING_LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT").unwrap_or_else(|_| "5060".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
 
         let redis_use_ssl_str = env::var("REDIS_USE_SSL").unwrap_or_else(|_| "false".to_string());
@@ -55,16 +55,26 @@ impl AppConfig {
         let service_version = env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
 
         Ok(AppConfig {
-            sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
-            sip_public_ip: env::var("PUBLIC_IP")?,
-            rabbitmq_url: env::var("RABBITMQ_URL")?,
-            redis_url,
-            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
-            user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
-            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,
             env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
-            sip_realm: env::var("SIP_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
-            service_version, // YENİ EKLENDİ
+                       
+            service_version,
+
+            sip_public_ip: env::var("SIP_SIGNALING_IPV4_EXTERNAL_ADDRESS")?,
+            
+            sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
+           
+            sip_realm: env::var("SIP_SIGNALING_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
+
+            rabbitmq_url: env::var("RABBITMQ_URL")?,
+
+            redis_url,
+
+            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
+
+            user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
+
+            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,            
+
         })
     }
 }

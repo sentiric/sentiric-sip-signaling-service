@@ -32,8 +32,23 @@ Bu faz, servisi basit bir orkestratörden, `sip-gateway` ile sorumlulukları net
 
 ---
 
-### **FAZ 3: Gelişmiş Çağrı Özellikleri (Sıradaki Öncelik)**
-Bu faz, platformun daha karmaşık ve kullanıcı odaklı çağrı yönetimi senaryolarını desteklemesini sağlayacak özellikleri eklemeyi hedefler.
+### **FAZ 3: Zenginleştirilmiş Olaylar ve Temizlik (Sıradaki Öncelik)**
+
+**Amaç:** Platformun geri kalanına daha zengin ve temiz veri sağlayarak asenkron iş akışlarının doğru çalışmasını garanti altına almak.
+
+-   **Görev ID: SIG-FEAT-01 - `call.started` Olayını Kullanıcı Bilgileriyle Zenginleştirme**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 1 - KRİTİK)**
+    -   **Bağımlılık:** `sentiric-contracts`'teki `CT-FEAT-01` görevinin tamamlanmış olması.
+    -   **Açıklama:** `dialplan-service`'ten alınan `ResolveDialplanResponse` nesnesinin tamamını, yeni kontratlara uygun olarak `call.started` olayının `dialplan_resolution` alanına eklemek. Bu, `agent-service`'in arayanı doğru bir şekilde tanımasını sağlayacaktır.
+    -   **Kabul Kriterleri:**
+        -   [ ] `sip/invite/orchestrator.rs` içindeki `publish_call_event` fonksiyonu, `dialplan_res` parametresini almalı ve `serde_json` kullanarak `event_payload`'a eklemelidir.
+        -   [ ] Yapılan bir test aramasında, RabbitMQ'ya giden `call.started` mesajının içinde `dialplan` anahtarının ve altında `matchedUser` bilgilerinin olduğu doğrulanmalıdır.
+
+-   **Görev ID: SIG-CLEANUP-01 - Gereksiz `call.answered` Olayını Kaldırma**
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 2)**
+    -   **Açıklama:** Mevcut akışta `agent-service` tarafından görmezden gelinen ve `call.started` ile aynı anda yayınlanan `call.answered` olayını kaldırmak. Bu, sistemdeki gereksiz gürültüyü azaltacak ve mimariyi basitleştirecektir.
+    -   **Kabul Kriterleri:**
+        -   [ ] `sip/invite/orchestrator.rs` içindeki `setup_and_finalize_call` fonksiyonundan `call.answered` olayını yayınlayan kod satırı kaldırılmalıdır.
 
 -   [ ] **Görev ID: SIG-012 - Çağrı Transferi (`REFER`)**
 -   [ ] **Görev ID: SIG-013 - Çağrı Bekletme (`HOLD`)**

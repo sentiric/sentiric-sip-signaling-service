@@ -38,8 +38,8 @@ pub(crate) async fn create_secure_grpc_channel(
     url: &str,
     server_name: &str,
 ) -> Result<Channel, Box<dyn Error + Send + Sync>> {
-    let cert_path = std::env::var("SIP_SIGNALING_SERVICE_CERT_PATH")?;
-    let key_path = std::env::var("SIP_SIGNALING_SERVICE_KEY_PATH")?;
+    let cert_path = std::env::var("SIP_SIGNALING_CERT_PATH")?;
+    let key_path = std::env::var("SIP_SIGNALING_KEY_PATH")?;
     let ca_path = std::env::var("GRPC_TLS_CA_PATH")?;
     let cert = tokio::fs::read(cert_path).await?;
     let key = tokio::fs::read(key_path).await?;
