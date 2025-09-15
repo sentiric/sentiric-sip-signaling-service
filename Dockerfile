@@ -25,7 +25,12 @@ RUN cargo build --release
 # --- AŞAMA 2: Çalıştırma (Runtime) ---
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y netcat-openbsd ca-certificates && rm -rf /var/lib/apt/lists/*
+# --- Çalışma zamanı sistem bağımlılıkları ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    netcat-openbsd \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/* 
 
 # YENİ: Build argümanlarını tekrar tanımla ki runtime'da da kullanılabilsin
 ARG GIT_COMMIT
