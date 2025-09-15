@@ -27,6 +27,7 @@ FROM debian:bookworm-slim
 
 # --- Çalışma zamanı sistem bağımlılıkları ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    procps \
     netcat-openbsd \
     curl \
     ca-certificates \
