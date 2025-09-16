@@ -1,31 +1,24 @@
-# 🚦 SIP Signaling Service - Görev Listesi (v2.1 - Strateji B+ Mimarisi)
+# 🚦 SIP Signaling Service - Görev Listesi (v2.2 - Veri Bütünlüğü Odaklı)
 
 Bu belge, `sip-signaling-service`'in geliştirme yol haritasını, tamamlanan kritik kilometre taşlarını ve gelecekteki hedeflerini tanımlar.
 
 ---
 
-### **FAZ 2: Strateji B+ ve Mimari Sağlamlaştırma (Tamamlandı)**
+### **FAZ 1: Uçtan Uca Veri Akışı Düzeltmesi (Mevcut Odak)**
 
--   [x] **MIMARI-02 - Strateji B+ ile Sorumlulukların Ayrıştırılması**
--   [x] **MIMARI-01 - Dayanıklı ve Anında Yanıt Veren Başlangıç Mimarisi**
--   [x] **SIG-BUG-02 - Yinelenen INVITE İsteklerine Karşı Dayanıklılık**
+**Amaç:** Platformdaki en kritik veri akışı kopukluğunu gidermek ve `agent-service`'in çağrıyı yapan kullanıcıyı tanımasını sağlamak için gerekli olan zenginleştirilmiş olayı yayınlamak.
 
----
-
-### **FAZ 3: Zenginleştirilmiş Olaylar ve Temizlik (Mevcut Odak)**
-
-**Amaç:** Platformun geri kalanına daha zengin ve temiz veri sağlayarak asenkron iş akışlarının doğru çalışmasını garanti altına almak.
-
--   **Görev ID: SIG-FEAT-01 - `call.started` Olayını Kullanıcı Bilgileriyle Zenginleştirme**
-    -   **Durum:** ⬜ **Yapılacak (Öncelik 1 - KRİTİK)**
-    -   **Bağımlılık:** `sentiric-contracts`'teki `CT-FEAT-01` görevinin tamamlanmış olması.
-    -   **Açıklama:** Loglarda görülen veri bütünlüğü sorununu çözmek için, `dialplan-service`'ten alınan `ResolveDialplanResponse` nesnesinin tamamını, yeni kontratlara uygun olarak `call.started` olayının `dialplan_resolution` alanına eklemek. Bu, `agent-service`'in arayanı doğru bir şekilde tanımasını sağlayacaktır.
-    -   **Kabul Kriterleri:**
-        -   [ ] `sip/invite/orchestrator.rs` içindeki `publish_call_event` fonksiyonu, `dialplan_res` parametresini almalı ve `serde_json` kullanarak `event_payload`'a eklemelidir.
-        -   [ ] Yapılan bir test aramasında, RabbitMQ'ya giden `call.started` mesajının içinde `dialplan` anahtarının ve altında `matchedUser` bilgilerinin olduğu doğrulanmalıdır.
+-   **Görev ID: SIG-FIX-01 - `call.started` Olayını Kullanıcı Bilgileriyle Zenginleştirme**
+    -   **Durum:** x **Yapılacak (Öncelik 1 - KRİTİK)**
+    -   **Bağımlılık:** `sentiric-contracts` deposunda `CT-FIX-01` görevinin tamamlanmış ve yeni bir sürümün yayınlanmış olması.
+    -   **Problem:** `call.started` olayı, `agent-service`'in kullanıcıyı tanıması için gereken `dialplan` ve `user` bilgilerini içermemektedir.
+    -   **Çözüm:**
+        -   [x] `Cargo.toml` dosyasındaki `sentiric-contracts` bağımlılığı, `CT-FIX-01` görevini içeren en son sürüme güncellenmelidir.
+        -   [x] `src/sip/invite/orchestrator.rs` içindeki `publish_call_event` fonksiyonu, parametre olarak `ResolveDialplanResponse` nesnesini almalıdır.
+        -   [x] `call.started` olayı oluşturulurken, bu `ResolveDialplanResponse` nesnesi, yeni kontratlardaki `dialplan_resolution` alanına atanmalıdır.
 
 -   **Görev ID: SIG-CLEANUP-01 - Gereksiz `call.answered` Olayını Kaldırma**
-    -   **Durum:** ⬜ **Yapılacak (Öncelik 2)**
-    -   **Açıklama:** Loglarda `agent-service`'in `call.answered` olayını `Bilinmeyen olay türü, görmezden geliniyor.` mesajıyla işlediği görülmektedir. Bu olay gereksizdir ve sistemdeki gürültüyü azaltmak için kaldırılmalıdır.
-    -   **Kabul Kriterleri:**
-        -   [ ] `sip/invite/orchestrator.rs` içindeki `setup_and_finalize_call` fonksiyonundan `call.answered` olayını yayınlayan kod satırı kaldırılmalıdır.
+    -   **Durum:** ⬜ **Yapılacak (Öncelik 2 - DÜŞÜK)**
+    -   **Problem:** `agent-service` tarafından işlenmeyen, gereksiz bir `call.answered` olayı yayınlanıyor.
+    -   **Çözüm:**
+        -   [ ] `src/sip/invite/orchestrator.rs` içindeki `setup_and_finalize_call` fonksiyonundan `call.answered` olayını yayınlayan kod satırı kaldırılmalıdır.

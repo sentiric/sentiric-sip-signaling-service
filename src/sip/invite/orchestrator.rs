@@ -92,7 +92,6 @@ async fn publish_call_event(
     event_type: &str,
     call_info: &ActiveCallInfo,
     dialplan_res: Option<&ResolveDialplanResponse>,
-    // DÜZELTME: Artık AppState yerine doğrudan LapinChannel'ı alıyor.
     rabbit_channel: &Arc<LapinChannel>,
 ) -> Result<(), ServiceError> {
     let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body);
@@ -104,12 +103,33 @@ async fn publish_call_event(
     });
 
     if event_type == "call.started" {
-        event_payload["from"] = serde_json::Value::String(call_info.from_header.clone());
-        event_payload["to"] = serde_json::Value::String(call_info.to_header.clone());
-        event_payload["media"] = serde_json::json!({ "server_rtp_port": call_info.rtp_port, "caller_rtp_addr": sdp_info });
-        if let Some(res) = dialplan_res {
-            event_payload["dialplan"] = serde_json::to_value(res)?;
+        let media_info = serde_json::json!({
+            "server_rtp_port": call_info.rtp_port,
+            "caller_rtp_addr": sdp_info
+        });
+        
+        // --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
+        // event_payload'u bir `serde_json::Value::Object` olarak alıyoruz ki
+        // yeni alanları kolayca ekleyebilelim.
+        if let serde_json::Value::Object(map) = &mut event_payload {
+            map.insert("from".to_string(), serde_json::Value::String(call_info.from_header.clone()));
+            map.insert("to".to_string(), serde_json::Value::String(call_info.to_header.clone()));
+            map.insert("media".to_string(), media_info);
+
+            // En kritik kısım: `dialplan_resolution` nesnesinin tamamını olaya ekliyoruz.
+            // `sentiric-contracts` build.rs'deki serde entegrasyonu sayesinde bu mümkün.
+            if let Some(res) = dialplan_res {
+                match serde_json::to_value(res) {
+                    Ok(dialplan_value) => {
+                        map.insert("dialplanResolution".to_string(), dialplan_value);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "ResolveDialplanResponse JSON'a serileştirilemedi.");
+                    }
+                }
+            }
         }
+        // --- DEĞİŞİKLİK BURADA BİTİYOR ---
     }
 
     rabbit_channel.basic_publish(
