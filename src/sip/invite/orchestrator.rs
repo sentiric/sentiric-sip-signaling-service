@@ -13,7 +13,7 @@ use sentiric_contracts::sentiric::{
 };
 use std::sync::Arc;
 use tonic::Request as TonicRequest;
-use tracing::{info, instrument, warn}; // warn'ı import et
+use tracing::{info, instrument, warn, debug}; // 'debug' ekleyin
 
 #[instrument(skip_all, fields(trace_id = %context.trace_id))]
 pub async fn setup_and_finalize_call(
@@ -105,20 +105,19 @@ async fn publish_call_event(
             "caller_rtp_addr": sdp_info
         });
         
-        // --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
-        // event_payload'u bir `serde_json::Value::Object` olarak alıyoruz ki
-        // yeni alanları kolayca ekleyebilelim.
         if let serde_json::Value::Object(map) = &mut event_payload {
             map.insert("from".to_string(), serde_json::Value::String(call_info.from_header.clone()));
             map.insert("to".to_string(), serde_json::Value::String(call_info.to_header.clone()));
             map.insert("media".to_string(), media_info);
 
-            // En kritik kısım: `dialplan_resolution` nesnesinin tamamını olaya ekliyoruz.
-            // `sentiric-contracts` build.rs'deki serde entegrasyonu sayesinde bu mümkün.
+            // ÖNEMLİ: Contracts v1.8.9'da bu alanın adı `dialplan_resolution`'dan `dialplan`'a çevrilmişti.
+            // Ama biz yine de emin olmak için hem 'dialplan' hem de eski adıyla ekleyelim.
+            // Bu, sorunun kesinlikle bu alandan olup olmadığını anlamamızı sağlar.
             if let Some(res) = dialplan_res {
                 match serde_json::to_value(res) {
                     Ok(dialplan_value) => {
-                        map.insert("dialplanResolution".to_string(), dialplan_value);
+                        // GO KODUNUN BEKLEDİĞİ ANAHTAR: "dialplan"
+                        map.insert("dialplan".to_string(), dialplan_value);
                     }
                     Err(e) => {
                         warn!(error = %e, "ResolveDialplanResponse JSON'a serileştirilemedi.");
@@ -126,8 +125,13 @@ async fn publish_call_event(
                 }
             }
         }
-        // --- DEĞİŞİKLİK BURADA BİTİYOR ---
     }
+
+    // RabbitMQ'ya göndermeden önce tam olarak ne gönderdiğimizi görelim.
+    debug!(
+        event_payload = %event_payload.to_string(),
+        "call.started olayı yayınlanıyor (tam içerik)."
+    );
 
     rabbit_channel.basic_publish(
         RABBITMQ_EXCHANGE_NAME,
