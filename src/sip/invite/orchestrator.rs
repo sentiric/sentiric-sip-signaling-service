@@ -15,7 +15,6 @@ use std::sync::Arc;
 use tonic::Request as TonicRequest;
 use tracing::{info, instrument, warn}; // warn'ı import et
 
-// ... setup_and_finalize_call ve diğer gRPC fonksiyonları aynı ...
 #[instrument(skip_all, fields(trace_id = %context.trace_id))]
 pub async fn setup_and_finalize_call(
     context: &CallContext,
@@ -52,14 +51,12 @@ pub async fn setup_and_finalize_call(
     state.active_calls.lock().await.insert(call_info.call_id.clone(), call_info.clone());
     info!("Aktif çağrı durumu başarıyla kaydedildi.");
 
-    // 4. RabbitMQ Olaylarını Yayınla (Eğer RabbitMQ bağlıysa)
+    // 4. RabbitMQ Olaylarını Yayınla  # SIG-CLEANUP-01
     if let Some(rabbit_channel) = &state.rabbit {
         publish_call_event("call.started", &call_info, Some(&dialplan_response), rabbit_channel).await?;
         info!("'call.started' olayı yayınlandı.");
-        publish_call_event("call.answered", &call_info, None, rabbit_channel).await?;
-        info!("'call.answered' olayı yayınlandı.");
     } else {
-        warn!("RabbitMQ bağlantısı aktif değil, 'call.started' ve 'call.answered' olayları yayınlanamadı.");
+        warn!("RabbitMQ bağlantısı aktif değil, 'call.started' olayı yayınlanamadı.");
     }
     
     Ok(call_info)

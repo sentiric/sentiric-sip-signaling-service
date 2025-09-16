@@ -18,7 +18,7 @@ Bu belge, `sip-signaling-service`'in geliştirme yol haritasını, tamamlanan kr
         -   [x] `call.started` olayı oluşturulurken, bu `ResolveDialplanResponse` nesnesi, yeni kontratlardaki `dialplan_resolution` alanına atanmalıdır.
 
 -   **Görev ID: SIG-CLEANUP-01 - Gereksiz `call.answered` Olayını Kaldırma**
-    -   **Durum:** ⬜ **Yapılacak (Öncelik 2 - DÜŞÜK)**
+    -   **Durum:** x **Yapılacak (Öncelik 2 - DÜŞÜK)**
     -   **Problem:** `agent-service` tarafından işlenmeyen, gereksiz bir `call.answered` olayı yayınlanıyor.
     -   **Çözüm:**
-        -   [ ] `src/sip/invite/orchestrator.rs` içindeki `setup_and_finalize_call` fonksiyonundan `call.answered` olayını yayınlayan kod satırı kaldırılmalıdır.
+        -   [x] `src/sip/invite/orchestrator.rs` içindeki `setup_and_finalize_call` fonksiyonundan `call.answered` olayını yayınlayan kod satırı kaldırılmalıdır.
