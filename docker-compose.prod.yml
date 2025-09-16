@@ -26,8 +26,13 @@ services:
       sentiric-net:
         ipv4_address: ${SIP_SIGNALING_IPV4_ADDRESS}
     restart: always
-    # depends_on: { 
-    #   rabbitmq: { condition: service_healthy },
-    #   media-service: { condition: service_healthy },
-    #   redis: { condition: service_healthy },
-    # }      
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f sentiric-sip-signaling-service || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s    
+    # depends_on: 
+    #   rabbitmq: { condition: service_healthy }
+    #   media-service: { condition: service_healthy }
+    #   redis: { condition: service_healthy }     
