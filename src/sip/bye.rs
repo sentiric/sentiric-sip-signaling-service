@@ -7,7 +7,7 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{info, warn, Span};
+use tracing::{error, info, warn, Span}; // error'u buraya ekliyoruz
 
 pub async fn handle(
     request_str: &str,
@@ -28,7 +28,6 @@ pub async fn handle(
             Span::current().record("trace_id", &call_info.trace_id as &str);
             info!(port = call_info.rtp_port, "Çağrı kullanıcı tarafından sonlandırıldı, aktif çağrı kaydı silindi.");
 
-            // --- YENİ MANTIK BAŞLANGICI ---
             if let Some(rabbit_channel) = &state.rabbit {
                 let event_payload = serde_json::json!({
                     "eventType": "call.ended",
@@ -45,6 +44,7 @@ pub async fn handle(
                     event_payload.to_string().as_bytes(),
                     BasicProperties::default().with_delivery_mode(2),
                 ).await {
+                    // error! makrosu artık tanınıyor olmalı.
                     error!(error = %e, "'call.ended' olayı yayınlanırken hata oluştu.");
                 } else {
                     info!("'call.ended' olayı başarıyla yayınlandı.");
@@ -52,8 +52,7 @@ pub async fn handle(
             } else {
                 warn!("RabbitMQ bağlantısı aktif değil, 'call.ended' olayı yayınlanamadı.");
             }
-            // --- YENİ MANTIK SONU ---
-
+            
             warn!(port = call_info.rtp_port, "Port, agent'ın son işlemleri için açık bırakıldı. Karantina mekanizması temizleyecek.");
         } else {
             warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı (muhtemelen agent tarafından zaten sonlandırılmıştı).");
