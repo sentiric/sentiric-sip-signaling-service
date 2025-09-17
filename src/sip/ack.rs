@@ -1,11 +1,11 @@
-// ========== DOSYA: sentiric-sip-signaling-service/src/sip/ack.rs (YENİ VE TAM DOSYA) ==========
+// ========== DOSYA: sentiric-sip-signaling-service/src/sip/ack.rs (SON VE DOĞRU HALİ) ==========
 use crate::app_state::AppState;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::utils::parse_complex_headers;
 use crate::state::ActiveCallInfo;
 use lapin::{options::BasicPublishOptions, BasicProperties};
 use std::error::Error;
-use std::net::SocketAddr; // <-- EKSİK OLAN IMPORT EKLENDİ
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{info, instrument, warn, Span};
@@ -14,7 +14,8 @@ use tracing::{info, instrument, warn, Span};
 pub async fn handle(
     request_str: &str,
     _sock: Arc<UdpSocket>,
-    _addr: SocketAddr,
+    // DEĞİŞİKLİK BURADA: '_addr' yerine 'addr' kullanılıyor
+    addr: SocketAddr,
     state: Arc<AppState>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if let Some(headers) = parse_complex_headers(request_str) {
