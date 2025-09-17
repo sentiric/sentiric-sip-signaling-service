@@ -1,9 +1,7 @@
-// File: src/rabbitmq/terminate.rs
-
 use super::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::app_state::AppState;
 use crate::error::ServiceError;
-use crate::sip::utils; // utils'i import ediyoruz
+use crate::sip::utils;
 use crate::state::ActiveCallInfo;
 use futures_util::StreamExt;
 use lapin::{options::*, types::FieldTable, BasicProperties, Channel as LapinChannel, Consumer};
@@ -12,7 +10,6 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{error, info, instrument, warn};
-
 
 #[derive(Deserialize, Debug)]
 struct TerminationRequest {
@@ -26,9 +23,7 @@ pub async fn listen_for_termination_requests(sock: Arc<UdpSocket>, state: Arc<Ap
         warn!("RabbitMQ bağlantısı olmadığından çağrı sonlandırma dinleyicisi başlatılamadı.");
         return;
     }
-    
     let rabbit_channel = state.rabbit.as_ref().unwrap();
-
     info!(queue = TERMINATION_QUEUE_NAME, "Çağrı sonlandırma kuyruğu dinleniyor...");
     let consumer = match setup_consumer(rabbit_channel).await {
         Ok(c) => c,
@@ -67,7 +62,6 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
         let _enter = span.enter();
         info!("Aktif çağrı bulundu, BYE paketi oluşturuluyor ve gönderiliyor.");
         
-        // GÜNCELLENDİ: Artık config'i de gönderiyoruz.
         let bye_request = create_bye_request(&call_info, &state.config);
         
         if let Err(e) = sock.send_to(bye_request.as_bytes(), call_info.remote_addr).await {
@@ -76,16 +70,24 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
             info!("BYE paketi başarıyla gönderildi.");
         }
         
-        let event_payload = serde_json::json!({
-            "eventType": "call.ended", "traceId": call_info.trace_id, "callId": call_id,
-            "reason": "terminated_by_request", "timestamp": chrono::Utc::now().to_rfc3339()
-        });
-        
         if let Some(rabbit_channel) = &state.rabbit {
-             if let Err(e) = rabbit_channel.basic_publish(RABBITMQ_EXCHANGE_NAME, "call.ended", BasicPublishOptions::default(), event_payload.to_string().as_bytes(), BasicProperties::default().with_delivery_mode(2)).await {
+             let event_payload = serde_json::json!({
+                "eventType": "call.ended", 
+                "traceId": call_info.trace_id, 
+                "callId": call_id,
+                "reason": "terminated_by_request", 
+                "timestamp": chrono::Utc::now().to_rfc3339()
+            });
+            if let Err(e) = rabbit_channel.basic_publish(
+                RABBITMQ_EXCHANGE_NAME, 
+                "call.ended", 
+                BasicPublishOptions::default(), 
+                event_payload.to_string().as_bytes(), 
+                BasicProperties::default().with_delivery_mode(2)
+            ).await {
                 error!(error = %e, "'call.ended' olayı yayınlanırken hata oluştu.");
             } else {
-                 info!("'call.ended' olayı yayınlandı.");
+                 info!("'call.ended' olayı (terminate request sonrası) yayınlandı.");
             }
         } else {
             warn!("RabbitMQ bağlantısı aktif değil, 'call.ended' olayı yayınlanamadı.");
@@ -99,21 +101,15 @@ async fn handle_termination_request(call_id: String, sock: &Arc<UdpSocket>, stat
 fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppConfig) -> String {
     let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
-
-    // `Contact` başlığından tam URI'ı alıyoruz. Gateway bu URI'a göre yönlendirme yapacak.
     let request_uri = utils::get_uri_from_header(&call_info.contact_header)
         .unwrap_or_else(|| call_info.contact_header.clone());
-
     let mut lines = Vec::new();
-    
     lines.push(format!("BYE {} SIP/2.0", request_uri));
-    
     let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
     lines.push(format!("Via: SIP/2.0/UDP {}:{};branch=z9hG4bK.{}", 
         config.sip_listen_addr.ip(), 
         config.sip_listen_addr.port(), 
         branch));
-    
     lines.push(format!("Max-Forwards: 70"));
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
@@ -121,7 +117,6 @@ fn create_bye_request(call_info: &ActiveCallInfo, config: &crate::config::AppCon
     lines.push(format!("CSeq: {} BYE", cseq_num));
     lines.push(format!("User-Agent: Sentiric Signaling Service v{}", config.service_version));
     lines.push(format!("Content-Length: 0"));
-
     lines.join("\r\n") + "\r\n\r\n"
 }
 
