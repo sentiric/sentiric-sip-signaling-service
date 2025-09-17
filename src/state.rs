@@ -1,5 +1,4 @@
-// sentiric-sip-signaling-service/src/state.rs
-
+// ========== DOSYA: sentiric-sip-signaling-service/src/state.rs (TAM VE GÜNCEL İÇERİK) ==========
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;

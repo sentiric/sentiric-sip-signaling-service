@@ -1,35 +1,32 @@
-// File: src/sip/invite/orchestrator.rs
+// ========== DOSYA: sentiric-sip-signaling-service/src/sip/invite/orchestrator.rs (TAM VE GÜNCEL İÇERİK) ==========
 use crate::app_state::AppState;
 use crate::error::ServiceError;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::call_context::CallContext;
 use crate::sip::utils::extract_sdp_media_info_from_body;
-use crate::state::ActiveCallInfo; // Sadece ActiveCallInfo'yu import et
-use tokio::sync::Mutex; // Mutex'i import et
-use lapin::{options::*, BasicProperties, Channel as LapinChannel}; // LapinChannel'ı import et
+use crate::state::ActiveCallInfo;
+use lapin::{options::*, BasicProperties, Channel as LapinChannel};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{ResolveDialplanRequest, ResolveDialplanResponse},
     media::v1::AllocatePortRequest,
 };
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tonic::Request as TonicRequest;
-use tracing::{info, instrument, warn, debug}; // 'debug' ekleyin
+use tracing::{debug, info, instrument, warn};
 
 #[instrument(skip_all, fields(trace_id = %context.trace_id))]
 pub async fn setup_and_finalize_call(
     context: &CallContext,
     state: Arc<AppState>,
 ) -> Result<ActiveCallInfo, ServiceError> {
-    // 1. Dialplan'i Çöz
     let dialplan_response = resolve_dialplan(context, state.clone()).await?;
     info!("Dialplan başarıyla çözüldü.");
 
-    // 2. Medya Portu Ayır
     let rtp_port = allocate_media_port(context, state.clone()).await?;
     info!(rtp_port, "Medya portu başarıyla ayrıldı.");
 
-    // 3. Çağrı Bilgisini ve Durumunu Sonlandır
     let mut response_headers = context.headers.clone();
     let to_tag: u32 = rand::thread_rng().gen();
     response_headers.entry("To".to_string()).and_modify(|v| *v = format!("{};tag={}", v, to_tag));
@@ -47,19 +44,15 @@ pub async fn setup_and_finalize_call(
         contact_header: context.contact_header.clone(),
         record_route_header: context.record_route_header.clone(),
         raw_body: context.raw_body.clone(),
-        // YENİ: Bayrağı başlangıçta 'false' olarak ayarla
-        answered_event_published: Arc::new(Mutex::new(false)), 
+        answered_event_published: Arc::new(Mutex::new(false)),
     };
     
     state.active_calls.lock().await.insert(call_info.call_id.clone(), call_info.clone());
     info!("Aktif çağrı durumu başarıyla kaydedildi.");
 
-    // 4. RabbitMQ Olaylarını Yayınla  # SIG-CLEANUP-01
     if let Some(rabbit_channel) = &state.rabbit {
-        // SADECE call.started olayını yayınla
         publish_call_event("call.started", &call_info, Some(&dialplan_response), rabbit_channel).await?;
         info!("'call.started' olayı yayınlandı.");
-        // 'call.answered' olayı buradan KALDIRILDI.
     } else {
         warn!("RabbitMQ bağlantısı aktif değil, 'call.started' olayı yayınlanamadı.");
     }
@@ -88,7 +81,6 @@ async fn allocate_media_port(context: &CallContext, state: Arc<AppState>) -> Res
     Ok(rtp_port)
 }
 
-
 #[instrument(skip(call_info, dialplan_res, rabbit_channel))]
 async fn publish_call_event(
     event_type: &str,
@@ -115,13 +107,9 @@ async fn publish_call_event(
             map.insert("to".to_string(), serde_json::Value::String(call_info.to_header.clone()));
             map.insert("media".to_string(), media_info);
 
-            // ÖNEMLİ: Contracts v1.8.9'da bu alanın adı `dialplan_resolution`'dan `dialplan`'a çevrilmişti.
-            // Ama biz yine de emin olmak için hem 'dialplan' hem de eski adıyla ekleyelim.
-            // Bu, sorunun kesinlikle bu alandan olup olmadığını anlamamızı sağlar.
             if let Some(res) = dialplan_res {
                 match serde_json::to_value(res) {
                     Ok(dialplan_value) => {
-                        // GO KODUNUN BEKLEDİĞİ ANAHTAR: "dialplan"
                         map.insert("dialplan".to_string(), dialplan_value);
                     }
                     Err(e) => {
@@ -132,10 +120,9 @@ async fn publish_call_event(
         }
     }
 
-    // RabbitMQ'ya göndermeden önce tam olarak ne gönderdiğimizi görelim.
     debug!(
         event_payload = %event_payload.to_string(),
-        "call.started olayı yayınlanıyor (tam içerik)."
+        "{} olayı yayınlanıyor (tam içerik).", event_type
     );
 
     rabbit_channel.basic_publish(

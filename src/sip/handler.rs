@@ -1,6 +1,5 @@
-// sentiric-sip-signaling-service/src/sip/handler.rs
-
-use super::{ack, bye, invite, register}; // ack'i import edin
+// ========== DOSYA: sentiric-sip-signaling-service/src/sip/handler.rs (TAM VE GÜNCEL İÇERİK) ==========
+use super::{ack, bye, invite, register};
 use crate::app_state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -38,7 +37,6 @@ pub async fn handle_sip_request(
         info!("BYE isteği işleniyor...");
         bye::handle(request_str, sock, addr, state).await
     } else if request_str.starts_with("ACK") {
-        // DEĞİŞİKLİK: Artık ACK'i görmezden gelmiyoruz, işleyiciye yönlendiriyoruz.
         info!("ACK isteği işleniyor...");
         ack::handle(request_str, sock, addr, state).await
     } else {
