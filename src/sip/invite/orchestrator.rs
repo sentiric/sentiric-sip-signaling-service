@@ -4,7 +4,8 @@ use crate::error::ServiceError;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::call_context::CallContext;
 use crate::sip::utils::extract_sdp_media_info_from_body;
-use crate::state::ActiveCallInfo;
+use crate::state::ActiveCallInfo; // Sadece ActiveCallInfo'yu import et
+use tokio::sync::Mutex; // Mutex'i import et
 use lapin::{options::*, BasicProperties, Channel as LapinChannel}; // LapinChannel'ı import et
 use rand::Rng;
 use sentiric_contracts::sentiric::{
@@ -46,6 +47,8 @@ pub async fn setup_and_finalize_call(
         contact_header: context.contact_header.clone(),
         record_route_header: context.record_route_header.clone(),
         raw_body: context.raw_body.clone(),
+        // YENİ: Bayrağı başlangıçta 'false' olarak ayarla
+        answered_event_published: Arc::new(Mutex::new(false)), 
     };
     
     state.active_calls.lock().await.insert(call_info.call_id.clone(), call_info.clone());
@@ -53,8 +56,10 @@ pub async fn setup_and_finalize_call(
 
     // 4. RabbitMQ Olaylarını Yayınla  # SIG-CLEANUP-01
     if let Some(rabbit_channel) = &state.rabbit {
+        // SADECE call.started olayını yayınla
         publish_call_event("call.started", &call_info, Some(&dialplan_response), rabbit_channel).await?;
         info!("'call.started' olayı yayınlandı.");
+        // 'call.answered' olayı buradan KALDIRILDI.
     } else {
         warn!("RabbitMQ bağlantısı aktif değil, 'call.started' olayı yayınlanamadı.");
     }

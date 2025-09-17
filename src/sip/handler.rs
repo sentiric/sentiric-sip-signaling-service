@@ -1,12 +1,12 @@
-// File: src/sip/handler.rs
-use super::{bye, invite, register};
+// sentiric-sip-signaling-service/src/sip/handler.rs
+
+use super::{ack, bye, invite, register}; // ack'i import edin
 use crate::app_state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, instrument};
 
-// Fonksiyon imzası AppState alacak şekilde güncellendi.
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id))]
 pub async fn handle_sip_request(
     request_bytes: Vec<u8>,
@@ -28,7 +28,6 @@ pub async fn handle_sip_request(
         "Gelen ham SIP isteği."
     );
 
-    // Her bir alt handler'a `sock` ve `state`'i iletiyoruz.
     let result = if request_str.starts_with("REGISTER") {
         info!("REGISTER isteği işleniyor...");
         register::handle(request_str, sock, addr, state).await
@@ -39,8 +38,9 @@ pub async fn handle_sip_request(
         info!("BYE isteği işleniyor...");
         bye::handle(request_str, sock, addr, state).await
     } else if request_str.starts_with("ACK") {
-        debug!("ACK isteği alındı, görmezden geliniyor.");
-        Ok(())
+        // DEĞİŞİKLİK: Artık ACK'i görmezden gelmiyoruz, işleyiciye yönlendiriyoruz.
+        info!("ACK isteği işleniyor...");
+        ack::handle(request_str, sock, addr, state).await
     } else {
         debug!(
             method = &request_str[..request_str.find(' ').unwrap_or(10)],

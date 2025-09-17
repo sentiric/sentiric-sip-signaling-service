@@ -1,4 +1,5 @@
-// File: src/state.rs
+// sentiric-sip-signaling-service/src/state.rs
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,9 +19,11 @@ pub struct ActiveCallInfo {
     pub from_header: String,
     pub to_header: String,
     pub contact_header: String,
-    #[allow(dead_code)] // Bu alan gelecekteki yönlendirme senaryoları için saklanıyor.
+    #[allow(dead_code)]
     pub record_route_header: Option<String>,
     pub raw_body: String,
+    // YENİ ALAN: 'call.answered' olayının gönderilip gönderilmediğini takip eder.
+    pub answered_event_published: Arc<Mutex<bool>>, 
 }
 
 pub type ActiveCalls = Arc<Mutex<HashMap<String, ActiveCallInfo>>>;
