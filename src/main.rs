@@ -1,4 +1,3 @@
-// File: src/main.rs
 use std::env;
 use std::process;
 use std::sync::Arc;
@@ -7,7 +6,7 @@ use tokio::select;
 use tokio::signal;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{prelude::*, EnvFilter, fmt::{self, format::FmtSpan}, Registry};
 
 mod app_state;
 mod config;
@@ -29,7 +28,6 @@ type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), ServiceError> {
-    // ... config ve logger kurulumu aynı ...
     let config = match AppConfig::load_from_env() {
         Ok(cfg) => Arc::new(cfg),
         Err(e) => {
@@ -37,18 +35,27 @@ async fn main() -> Result<(), ServiceError> {
             process::exit(1);
         }
     };
+
+    // --- YENİ STANDART LOGLAMA YAPILANDIRMASI ---
+    let env_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new("info"))?; // Varsayılan "info"
     
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let subscriber_builder = tracing_subscriber::fmt().with_env_filter(env_filter);
+    let subscriber = Registry::default().with(env_filter);
+    
     if config.env == "development" {
-        subscriber_builder.with_target(true).with_line_number(true).init();
+        subscriber
+            .with(fmt::layer().with_target(true).with_line_number(true).with_span_events(FmtSpan::NONE))
+            .init();
     } else {
-        subscriber_builder.json().with_current_span(true).with_span_list(true).init();
+        subscriber
+            .with(fmt::layer().json().with_current_span(true).with_span_list(true).with_span_events(FmtSpan::NONE))
+            .init();
     }
+    // --- DEĞİŞİKLİK SONU ---
 
     info!(
         service_name = "sentiric-sip-signaling-service",
-        version = %env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string()),
+        version = %config.service_version,
         commit = %env::var("GIT_COMMIT").unwrap_or_else(|_| "unknown".to_string()),
         build_date = %env::var("BUILD_DATE").unwrap_or_else(|_| "unknown".to_string()),
         profile = %config.env,
@@ -56,12 +63,9 @@ async fn main() -> Result<(), ServiceError> {
     );
 
     let shared_state: SharedAppState = Arc::new(Mutex::new(None));
-
-    // Arka planda AppState'i başlat
     let state_clone_for_init = shared_state.clone();
     let config_clone_for_init = config.clone();
 
-    // DÜZELTME: Termination task'a soketi verebilmek için onu burada oluşturuyoruz.
     let sock = UdpSocket::bind(config.sip_listen_addr).await.map_err(|e| ServiceError::SocketBind {
         addr: config.sip_listen_addr,
         source: e,
@@ -83,7 +87,6 @@ async fn main() -> Result<(), ServiceError> {
                 
                 let final_state = Arc::new(state);
                 
-                // Arka plan görevlerini burada, state hazır olunca başlat
                 tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
                 tokio::spawn(rabbitmq::terminate::listen_for_termination_requests(sock_clone_for_init, final_state.clone()));
                 
