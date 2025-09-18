@@ -35,21 +35,19 @@ async fn main() -> Result<(), ServiceError> {
             process::exit(1);
         }
     };
-
-    // --- YENİ STANDART LOGLAMA YAPILANDIRMASI ---
+    
+    // --- LOGLAMA YAPILANDIRMASI (DÜZELTİLMİŞ) ---
+    // Bu blok, `?` operatörünün artık doğru şekilde çalışmasını sağlar.
+    let rust_log_env = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new("info"))?; // Varsayılan "info"
+        .or_else(|_| EnvFilter::try_new(&rust_log_env))?;
     
     let subscriber = Registry::default().with(env_filter);
     
     if config.env == "development" {
-        subscriber
-            .with(fmt::layer().with_target(true).with_line_number(true).with_span_events(FmtSpan::NONE))
-            .init();
+        subscriber.with(fmt::layer().with_target(true).with_line_number(true).with_span_events(FmtSpan::NONE)).init();
     } else {
-        subscriber
-            .with(fmt::layer().json().with_current_span(true).with_span_list(true).with_span_events(FmtSpan::NONE))
-            .init();
+        subscriber.with(fmt::layer().json().with_current_span(true).with_span_list(true).with_span_events(FmtSpan::NONE)).init();
     }
     // --- DEĞİŞİKLİK SONU ---
 
@@ -119,7 +117,7 @@ async fn main() -> Result<(), ServiceError> {
                 let request_str = String::from_utf8_lossy(&request_bytes);
                 if request_str.starts_with("INVITE") {
                     if let Some(headers) = parse_complex_headers(&request_str) {
-                        let response = create_response("503 Service Unavailable", &headers, None, &config, addr);
+                        let response = create_response("503 Service Unavailable", &headers, &config, addr);
                         let _ = sock.send_to(response.as_bytes(), addr).await;
                     }
                 }

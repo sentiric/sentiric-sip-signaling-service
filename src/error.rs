@@ -1,4 +1,3 @@
-// File: src/error.rs
 use thiserror::Error;
 use std::net::SocketAddr;
 
@@ -33,6 +32,11 @@ pub enum ServiceError {
 
     #[error("Geçersiz başlık (Tonic): {0}")]
     InvalidHeader(#[from] tonic::metadata::errors::InvalidMetadataValue),
+    
+    // --- YENİ EKLENEN VARYANT ---
+    #[error("Loglama filtresi hatası: {0}")]
+    TracingFilter(#[from] tracing_subscriber::filter::ParseError),
+    // --- DEĞİŞİKLİK SONU ---
 
     #[error("Beklenmedik bir hata oluştu: {0}")]
     Generic(String),
