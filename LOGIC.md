@@ -60,8 +60,9 @@ sequenceDiagram
 *   **Karar:** Servis, **iki aşamalı bir başlangıç** modeli benimser: Önce UDP portunu dinler ve `503 Service Unavailable` yanıtı verir, ardından arka planda kritik bağımlılıklara (gRPC, Redis) bağlanmayı dener. Sadece tüm bağlantılar başarılı olduğunda tam işlevsel moda geçer.
 *   **Sonuç:** Bu model, sistemin hem hızlı yanıt vermesini hem de kararlı olmasını sağlar.
 
-### 3.3. Merkezi Durum Yönetimi (`AppState`)
+### 3.3. Merkezi Durum ve Konfigürasyon Yönetimi (`AppState`)
 
-*   **Problem:** Her istekte yeniden kaynak (gRPC istemcileri, bağlantı havuzları) oluşturmak verimsizdir.
-*   **Karar:** Tüm paylaşılan kaynaklar, servis başlarken sadece bir kez oluşturulur ve `Arc<AppState>` adında merkezi bir yapıda saklanır.
-*   **Sonuç:** Kaynak israfı önlenir, performans artar ve kodun bağımlılık yönetimi basitleşir.
+*   **Problem:** Her istekte yeniden kaynak (gRPC istemcileri, bağlantı havuzları) oluşturmak verimsizdir. Ayrıca, `SIP Digest Authentication` gibi birden fazla servisi ilgilendiren konfigürasyon parametrelerinin (`SIP_SIGNALING_REALM`) tutarlı olması gerekir.
+*   **Karar:** Tüm paylaşılan kaynaklar ve konfigürasyonlar, servis başlarken sadece bir kez oluşturulur ve `Arc<AppState>` adında merkezi bir yapıda saklanır. `SIP_SIGNALING_REALM` gibi parametreler, merkezi `sentiric-config` reposundan okunarak hem bu servise hem de `user-service`'e enjekte edilir.
+*   **Sonuç:** Kaynak israfı önlenir, performans artar ve platform genelinde konfigürasyon tutarlılığı garanti altına alınır.
+

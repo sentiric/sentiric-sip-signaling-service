@@ -30,6 +30,15 @@ Bu servis, dış dünyanın karmaşık SIP protokol detaylarından (NAT, çoklu 
     *   **AMQP (Lapin ile):** Asenkron olay yayınlama için (RabbitMQ).
 *   **Durum Yönetimi:** Redis (Kayıtlar ve atomik kilitler için).
 *   **Gözlemlenebilirlik:** `tracing` ile yapılandırılmış loglama.
+*   **Kimlik Doğrulama:** `SIP Digest Authentication` (MD5)
+
+### **Önemli Kavram: SIP Realm**
+
+Platformumuzda, `SIP_SIGNALING_REALM` ortam değişkeni (örn: `sentiric_demo`), kimlik doğrulama işlemlerinde kullanılan mantıksal "bölgeyi" tanımlar. Bu, SIP standardındaki `realm` parametresine karşılık gelir.
+
+MicroSIP gibi bazı SIP istemcileri, bu değeri "Domain" olarak adlandırılan bir alana girmenizi isteyebilir. Ancak bu, paketin gönderileceği "SIP Sunucusu" (bizim `sip-gateway` IP adresimiz) ile karıştırılmamalıdır. Bizim mimarimizde bu iki kavram nettir:
+*   **SIP Sunucusu:** `sip-gateway`'in genel IP adresi.
+*   **SIP Realm/Domain:** `SIP_SIGNALING_REALM` değişkeni ile tanımlanan kimlik doğrulama alanı.
 
 ## 🚀 Yerel Geliştirme
 
@@ -37,8 +46,8 @@ Bu servis, bir mikroservis mimarisinin merkezi bir parçasıdır ve tek başına
 
 1.  **Sistemi Docker Compose ile Başlatın:**
     ```bash
-    # Ana proje dizininden çalıştırın
-    docker-compose -f environments/docker-compose/dev.composite.yml up --build sip-signaling-service
+    # Ana proje dizininden (sentiric-infrastructure) çalıştırın
+    make start PROFILE=dev SERVICE=sip-signaling-service
     ```
 ---
 ## 🏛️ Anayasal Konum
