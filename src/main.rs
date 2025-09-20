@@ -1,3 +1,4 @@
+// sentiric-sip-signaling-service/src/main.rs
 use std::env;
 use std::process;
 use std::sync::Arc;
@@ -36,7 +37,14 @@ async fn main() -> Result<(), ServiceError> {
         }
     };
     
-    let rust_log_env = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    // --- DEĞİŞİKLİK BURADA ---
+    // RUST_LOG ortam değişkeni, config'den gelen LOG_LEVEL'den daha önceliklidir.
+    // Bu, bir servisi özel olarak debug etmek istediğimizde bize esneklik sağlar.
+    // Örnek: LOG_LEVEL=info iken `RUST_LOG=sentiric_sip_signaling_service=debug`
+    // ile sadece bu servisi debug moduna alabiliriz.
+    let rust_log_env = env::var("RUST_LOG")
+        .unwrap_or_else(|_| env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()));
+    
     let env_filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(&rust_log_env))?;
     
