@@ -15,6 +15,11 @@ use tracing_subscriber::{
     Registry, EnvFilter,
 };
 
+// --- YENİ EKLENEN IMPORT'LAR ---
+use rustls::crypto::CryptoProvider;
+use rustls::crypto::ring::default_provider;
+// --- BİTTİ ---
+
 mod app_state;
 mod config;
 mod error;
@@ -37,6 +42,14 @@ type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), ServiceError> {
+    // --- YENİ EKLENEN KOD BLOKU ---
+    // Herhangi bir şey yapmadan önce, kripto sağlayıcısını kur. Bu,
+    // Redis'e TLS ile bağlanırken yaşanan 'panic' hatasını çözer.
+    let provider = default_provider();
+    CryptoProvider::install_default(provider)
+        .expect("Crypto provider (ring) kurulamadı.");
+    // --- BİTTİ ---
+
     let config = match AppConfig::load_from_env() {
         Ok(cfg) => Arc::new(cfg),
         Err(e) => {
