@@ -2,6 +2,7 @@
 use std::env;
 use std::process;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::signal;
@@ -12,7 +13,7 @@ use tracing_subscriber::{prelude::*, EnvFilter, fmt::{self, format::FmtSpan}, Re
 mod app_state;
 mod config;
 mod error;
-mod grpc;
+mod grpc; // grpc modülünü ekliyoruz
 mod rabbitmq;
 mod redis;
 mod sip;
@@ -21,9 +22,12 @@ mod state;
 use app_state::AppState;
 use config::AppConfig;
 use error::ServiceError;
+use grpc::service::MySipSignalingService; // Yeni gRPC servisimizi import ediyoruz
+use sentiric_contracts::sentiric::sip::v1::sip_signaling_service_server::SipSignalingServiceServer; // Kontrattan gelen sunucuyu import ediyoruz
 use sip::responses::create_response;
 use sip::utils::parse_complex_headers;
 use state::cleanup_old_transactions;
+use tonic::transport::Server as GrpcServer; // Tonic sunucusunu import ediyoruz
 
 type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
@@ -37,11 +41,6 @@ async fn main() -> Result<(), ServiceError> {
         }
     };
     
-    // --- DEĞİŞİKLİK BURADA ---
-    // RUST_LOG ortam değişkeni, config'den gelen LOG_LEVEL'den daha önceliklidir.
-    // Bu, bir servisi özel olarak debug etmek istediğimizde bize esneklik sağlar.
-    // Örnek: LOG_LEVEL=info iken `RUST_LOG=sentiric_sip_signaling_service=debug`
-    // ile sadece bu servisi debug moduna alabiliriz.
     let rust_log_env = env::var("RUST_LOG")
         .unwrap_or_else(|_| env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()));
     
@@ -66,38 +65,59 @@ async fn main() -> Result<(), ServiceError> {
     );
 
     let shared_state: SharedAppState = Arc::new(Mutex::new(None));
+    let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
+    info!(address = %config.sip_listen_addr, "✅ SIP dinleyici hemen başlatıldı.");
+    
     let state_clone_for_init = shared_state.clone();
     let config_clone_for_init = config.clone();
 
-    let sock = UdpSocket::bind(config.sip_listen_addr).await.map_err(|e| ServiceError::SocketBind {
-        addr: config.sip_listen_addr,
-        source: e,
-    })?;
-    let sock = Arc::new(sock);
-    info!(address = %config.sip_listen_addr, "✅ SIP dinleyici hemen başlatıldı. Gelen isteklere yanıt verilecek.");
-    
-    let sock_clone_for_init = sock.clone();
+    // --- YENİ: gRPC SUNUCUSUNU BAŞLATMA GÖREVİ ---
+    let grpc_server_task = {
+        let state_clone = shared_state.clone();
+        let sock_clone = sock.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Some(state) = state_clone.lock().await.as_ref() {
+                    let grpc_service = MySipSignalingService {
+                        app_state: state.clone(),
+                        sock: sock_clone.clone(),
+                    };
+                    
+                    let grpc_port = env::var("SIP_SIGNALING_GRPC_PORT").unwrap_or_else(|_| "13021".to_string());
+                    let addr_str = format!("[::]:{}", grpc_port);
+                    let addr = addr_str.parse().unwrap();
+                    
+                    info!(address = %addr, "gRPC sunucusu başlatılıyor...");
+                    if let Err(e) = GrpcServer::builder()
+                        // TODO: Add mTLS configuration here
+                        .add_service(SipSignalingServiceServer::new(grpc_service))
+                        .serve(addr)
+                        .await
+                    {
+                        error!(error = %e, "gRPC sunucusu çöktü.");
+                    }
+                    break; 
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+    };
+
     tokio::spawn(async move {
         info!("Arka planda uygulama durumu (bağlantılar) başlatılıyor...");
         match AppState::new_critical(config_clone_for_init).await {
             Ok(mut state) => {
                 state.connect_rabbitmq().await;
-                if state.rabbit.is_some() {
-                    info!("✅ Kritik olmayan bağımlılık (RabbitMQ) başarıyla kuruldu.");
-                } else {
-                    warn!("Kritik olmayan bağımlılık (RabbitMQ) kurulamadı. Servis düşük işlevsellik modunda çalışacak.");
-                }
-                
                 let final_state = Arc::new(state);
                 
                 tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
-                tokio::spawn(rabbitmq::terminate::listen_for_termination_requests(sock_clone_for_init, final_state.clone()));
+                // --- DEĞİŞİKLİK: terminate dinleyicisi kaldırıldı ---
                 
                 *state_clone_for_init.lock().await = Some(final_state);
                 info!("✅ Tüm bağımlılıklar başarıyla kuruldu. Servis tam işlevsel.");
             }
             Err(e) => {
-                error!(error = %e, "Kritik bağımlılıklar başlatılamadı. Servis başlatılamıyor ve sonlandırılacak.");
+                error!(error = %e, "Kritik bağımlılıklar başlatılamadı. Servis sonlandırılacak.");
                 process::exit(1);
             }
         }
@@ -122,10 +142,7 @@ async fn main() -> Result<(), ServiceError> {
                 let request_str = String::from_utf8_lossy(&request_bytes);
                 if request_str.starts_with("INVITE") {
                     if let Some(headers) = parse_complex_headers(&request_str) {
-                        // --- DÜZELTME BURADA ---
-                        // Eksik olan `None` argümanı eklendi.
                         let response = create_response("503 Service Unavailable", &headers, None, &config, addr);
-                        // --- DÜZELTME SONU ---
                         let _ = sock.send_to(response.as_bytes(), addr).await;
                     }
                 }
@@ -139,8 +156,12 @@ async fn main() -> Result<(), ServiceError> {
         res = main_loop => {
             if let Err(e) = res {
                 error!(error = %ServiceError::from(e), "Kritik ağ hatası, servis durduruluyor.");
-                process::exit(1);
             }
+        },
+        res = grpc_server_task => {
+             if let Err(e) = res {
+                error!(error = %e, "gRPC sunucu görevi hatayla sonlandı.");
+             }
         },
         _ = signal::ctrl_c() => {
             warn!("Kapatma sinyali (Ctrl+C) alındı. Servis gracefully kapatılıyor...");

@@ -5,11 +5,15 @@ use regex::Regex;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
+// --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
+use crate::config::AppConfig;
+use crate::state::ActiveCallInfo; // `state` modülünü doğru yoldan import ediyoruz.
+use rand::Rng; // `sample_iter` için gerekli trait.
+use tracing::instrument; // `instrument` makrosu için gerekli.
+// --- DEĞİŞİKLİK SONA ERİYOR ---
+
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 
-/// Gelen SIP isteğindeki başlıkları basit bir HashMap'e ayrıştırır.
-/// Strateji B+ gereği, bu fonksiyon artık çoklu Via veya Record-Route başlıklarını
-/// işlemek zorunda değildir. Bu sorumluluk `sip-gateway-service`'e aittir.
 pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     let mut headers = HashMap::new();
     for line in request.lines() {
@@ -29,12 +33,9 @@ pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
     }
 }
 
-// YENİ EKLENDİ: Bu fonksiyon derleme hatasını düzeltmek için geri eklendi.
-// 'Contact' gibi başlıkların içinden URI'ı (<sip:...>) çıkarmak için kullanılır.
 pub fn get_uri_from_header(header: &str) -> Option<String> {
     header.find('<').and_then(|start| header.find('>').map(|end| header[start + 1..end].to_string()))
 }
-
 
 pub fn extract_user_from_uri(uri: &str) -> Option<String> {
     USER_EXTRACT_RE.captures(uri).and_then(|caps| caps.get(1)).map(|user_part| {
@@ -69,4 +70,31 @@ pub fn extract_sdp_media_info_from_body(sip_body: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+#[instrument(skip_all, fields(call_id = %call_info.call_id))]
+pub fn create_bye_request(call_info: &ActiveCallInfo, config: &AppConfig) -> String {
+    let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
+    let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
+    let request_uri = get_uri_from_header(&call_info.contact_header)
+        .unwrap_or_else(|| call_info.contact_header.clone());
+    
+    let mut lines = Vec::new();
+    lines.push(format!("BYE {} SIP/2.0", request_uri));
+
+    let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
+    lines.push(format!("Via: SIP/2.0/UDP {}:{};branch=z9hG4bK.{}", 
+        config.sip_listen_addr.ip(), 
+        config.sip_listen_addr.port(), 
+        branch));
+    
+    lines.push(format!("Max-Forwards: 70"));
+    lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
+    lines.push(format!("To: {}", call_info.from_header));
+    lines.push(format!("Call-ID: {}", call_info.call_id));
+    lines.push(format!("CSeq: {} BYE", cseq_num));
+    lines.push(format!("User-Agent: Sentiric Signaling Service v{}", config.service_version));
+    lines.push(format!("Content-Length: 0"));
+    
+    lines.join("\r\n") + "\r\n\r\n"
 }
