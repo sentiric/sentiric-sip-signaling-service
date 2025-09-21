@@ -1,4 +1,4 @@
-// File: src/config.rs
+// sentiric-sip-signaling-service/src/config.rs
 use std::env;
 use std::error::Error;
 use std::fmt;
@@ -15,7 +15,11 @@ pub struct AppConfig {
     pub redis_url: String,
     pub env: String,
     pub sip_realm: String,
-    pub service_version: String, // YENİ EKLENDİ
+    pub service_version: String,
+    // --- YENİ ALANLAR ---
+    pub cert_path: String,
+    pub key_path: String,
+    pub ca_path: String,
 }
 
 impl fmt::Debug for AppConfig {
@@ -29,7 +33,7 @@ impl fmt::Debug for AppConfig {
             .field("rabbitmq_url", &"***REDACTED***")
             .field("redis_url", &"***REDACTED***")
             .field("env", &self.env)
-            .field("service_version", &self.service_version) // YENİ EKLENDİ
+            .field("service_version", &self.service_version)
             .finish()
     }
 }
@@ -51,30 +55,23 @@ impl AppConfig {
             redis_url_from_env
         };
 
-        // YENİ: Servis versiyonunu çevre değişkenlerinden oku.
         let service_version = env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
 
         Ok(AppConfig {
             env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
-                       
             service_version,
-
             sip_public_ip: env::var("SIP_SIGNALING_IPV4_EXTERNAL_ADDRESS")?,
-            
             sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
-           
             sip_realm: env::var("SIP_SIGNALING_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
-
             rabbitmq_url: env::var("RABBITMQ_URL")?,
-
             redis_url,
-
             media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
-
             user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
-
             dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,            
-
+            // --- YENİ ALANLAR ---
+            cert_path: env::var("SIP_SIGNALING_CERT_PATH")?,
+            key_path: env::var("SIP_SIGNALING_KEY_PATH")?,
+            ca_path: env::var("GRPC_TLS_CA_PATH")?,
         })
     }
 }

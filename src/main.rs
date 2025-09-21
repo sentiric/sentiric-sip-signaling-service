@@ -7,13 +7,18 @@ use tokio::net::UdpSocket;
 use tokio::select;
 use tokio::signal;
 use tokio::sync::Mutex;
+use tonic::transport::{Certificate, Identity, Server as GrpcServer, ServerTlsConfig};
 use tracing::{error, info, warn};
-use tracing_subscriber::{prelude::*, EnvFilter, fmt::{self, format::FmtSpan}, Registry};
+use tracing_subscriber::{
+    fmt::{self, format::FmtSpan},
+    prelude::*,
+    Registry, EnvFilter,
+};
 
 mod app_state;
 mod config;
 mod error;
-mod grpc; // grpc modülünü ekliyoruz
+mod grpc;
 mod rabbitmq;
 mod redis;
 mod sip;
@@ -22,12 +27,11 @@ mod state;
 use app_state::AppState;
 use config::AppConfig;
 use error::ServiceError;
-use grpc::service::MySipSignalingService; // Yeni gRPC servisimizi import ediyoruz
-use sentiric_contracts::sentiric::sip::v1::sip_signaling_service_server::SipSignalingServiceServer; // Kontrattan gelen sunucuyu import ediyoruz
+use grpc::service::MySipSignalingService;
+use sentiric_contracts::sentiric::sip::v1::sip_signaling_service_server::SipSignalingServiceServer;
 use sip::responses::create_response;
 use sip::utils::parse_complex_headers;
 use state::cleanup_old_transactions;
-use tonic::transport::Server as GrpcServer; // Tonic sunucusunu import ediyoruz
 
 type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
@@ -40,7 +44,7 @@ async fn main() -> Result<(), ServiceError> {
             process::exit(1);
         }
     };
-    
+
     let rust_log_env = env::var("RUST_LOG")
         .unwrap_or_else(|_| env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()));
     
@@ -66,15 +70,15 @@ async fn main() -> Result<(), ServiceError> {
 
     let shared_state: SharedAppState = Arc::new(Mutex::new(None));
     let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
-    info!(address = %config.sip_listen_addr, "✅ SIP dinleyici hemen başlatıldı.");
+    info!(address = %config.sip_listen_addr, "✅ UDP SIP dinleyici hemen başlatıldı.");
     
     let state_clone_for_init = shared_state.clone();
     let config_clone_for_init = config.clone();
 
-    // --- YENİ: gRPC SUNUCUSUNU BAŞLATMA GÖREVİ ---
     let grpc_server_task = {
         let state_clone = shared_state.clone();
         let sock_clone = sock.clone();
+        let config_clone = config.clone();
         tokio::spawn(async move {
             loop {
                 if let Some(state) = state_clone.lock().await.as_ref() {
@@ -86,10 +90,21 @@ async fn main() -> Result<(), ServiceError> {
                     let grpc_port = env::var("SIP_SIGNALING_GRPC_PORT").unwrap_or_else(|_| "13021".to_string());
                     let addr_str = format!("[::]:{}", grpc_port);
                     let addr = addr_str.parse().unwrap();
+
+                    let cert = tokio::fs::read(&config_clone.cert_path).await.expect("Sunucu sertifikası okunamadı");
+                    let key = tokio::fs::read(&config_clone.key_path).await.expect("Sunucu anahtarı okunamadı");
+                    let identity = Identity::from_pem(cert, key);
                     
-                    info!(address = %addr, "gRPC sunucusu başlatılıyor...");
+                    let ca_cert = tokio::fs::read(&config_clone.ca_path).await.expect("CA sertifikası okunamadı");
+                    let client_ca_cert = Certificate::from_pem(ca_cert);
+
+                    let tls_config = ServerTlsConfig::new()
+                        .identity(identity)
+                        .client_ca_root(client_ca_cert);
+                    
+                    info!(address = %addr, "gRPC sunucusu (mTLS ile) başlatılıyor...");
                     if let Err(e) = GrpcServer::builder()
-                        // TODO: Add mTLS configuration here
+                        .tls_config(tls_config).expect("TLS yapılandırması başarısız")
                         .add_service(SipSignalingServiceServer::new(grpc_service))
                         .serve(addr)
                         .await
@@ -104,14 +119,13 @@ async fn main() -> Result<(), ServiceError> {
     };
 
     tokio::spawn(async move {
-        info!("Arka planda uygulama durumu (bağlantılar) başlatılıyor...");
+        info!("Arka planda uygulama durumu (bağımlılıklar) başlatılıyor...");
         match AppState::new_critical(config_clone_for_init).await {
             Ok(mut state) => {
                 state.connect_rabbitmq().await;
                 let final_state = Arc::new(state);
                 
                 tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
-                // --- DEĞİŞİKLİK: terminate dinleyicisi kaldırıldı ---
                 
                 *state_clone_for_init.lock().await = Some(final_state);
                 info!("✅ Tüm bağımlılıklar başarıyla kuruldu. Servis tam işlevsel.");
@@ -155,7 +169,7 @@ async fn main() -> Result<(), ServiceError> {
     select! {
         res = main_loop => {
             if let Err(e) = res {
-                error!(error = %ServiceError::from(e), "Kritik ağ hatası, servis durduruluyor.");
+                error!(error = %ServiceError::from(e), "Kritik UDP ağ hatası, servis durduruluyor.");
             }
         },
         res = grpc_server_task => {
