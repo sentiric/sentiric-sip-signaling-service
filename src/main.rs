@@ -15,10 +15,8 @@ use tracing_subscriber::{
     Registry, EnvFilter,
 };
 
-// --- YENİ EKLENEN IMPORT'LAR ---
 use rustls::crypto::CryptoProvider;
 use rustls::crypto::ring::default_provider;
-// --- BİTTİ ---
 
 mod app_state;
 mod config;
@@ -42,13 +40,9 @@ type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), ServiceError> {
-    // --- YENİ EKLENEN KOD BLOKU ---
-    // Herhangi bir şey yapmadan önce, kripto sağlayıcısını kur. Bu,
-    // Redis'e TLS ile bağlanırken yaşanan 'panic' hatasını çözer.
     let provider = default_provider();
     CryptoProvider::install_default(provider)
         .expect("Crypto provider (ring) kurulamadı.");
-    // --- BİTTİ ---
 
     let config = match AppConfig::load_from_env() {
         Ok(cfg) => Arc::new(cfg),
@@ -88,12 +82,14 @@ async fn main() -> Result<(), ServiceError> {
     let state_clone_for_init = shared_state.clone();
     let config_clone_for_init = config.clone();
 
+    // gRPC sunucusunu ayrı bir görevde başlat
     let grpc_server_task = {
         let state_clone = shared_state.clone();
         let sock_clone = sock.clone();
         let config_clone = config.clone();
         tokio::spawn(async move {
             loop {
+                // Sadece AppState hazır olduğunda gRPC sunucusunu başlat
                 if let Some(state) = state_clone.lock().await.as_ref() {
                     let grpc_service = MySipSignalingService {
                         app_state: state.clone(),
@@ -124,13 +120,15 @@ async fn main() -> Result<(), ServiceError> {
                     {
                         error!(error = %e, "gRPC sunucusu çöktü.");
                     }
-                    break; 
+                    break; // Sunucu çökerse döngüden çık
                 }
+                // AppState hazır değilse, kısa bir süre bekle ve tekrar kontrol et
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         })
     };
 
+    // Bağımlılıkları kurmak için ayrı bir görev başlat
     tokio::spawn(async move {
         info!("Arka planda uygulama durumu (bağımlılıklar) başlatılıyor...");
         match AppState::new_critical(config_clone_for_init).await {
@@ -138,6 +136,7 @@ async fn main() -> Result<(), ServiceError> {
                 state.connect_rabbitmq().await;
                 let final_state = Arc::new(state);
                 
+                // Zaman aşımına uğramış çağrıları temizlemek için arka plan görevini başlat
                 tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
                 
                 *state_clone_for_init.lock().await = Some(final_state);
@@ -150,6 +149,7 @@ async fn main() -> Result<(), ServiceError> {
         }
     });
     
+    // Ana UDP dinleme döngüsü
     let main_loop = async {
         let mut buf = [0; 65535];
         loop {
@@ -158,6 +158,7 @@ async fn main() -> Result<(), ServiceError> {
             
             let locked_state = shared_state.lock().await;
             if let Some(state) = locked_state.as_ref() {
+                // Durum hazır, isteği işlemesi için yeni bir task başlat
                 tokio::spawn(sip::handler::handle_sip_request(
                     request_bytes,
                     Arc::clone(&sock),
@@ -165,6 +166,7 @@ async fn main() -> Result<(), ServiceError> {
                     state.clone(),
                 ));
             } else {
+                // Durum henüz hazır değil, 503 yanıtı ver
                 warn!(from = %addr, "Servis henüz başlatılıyor, isteğe 503 Service Unavailable yanıtı veriliyor.");
                 let request_str = String::from_utf8_lossy(&request_bytes);
                 if request_str.starts_with("INVITE") {
@@ -179,6 +181,7 @@ async fn main() -> Result<(), ServiceError> {
         Ok::<(), std::io::Error>(())
     };
 
+    // Graceful shutdown mekanizması
     select! {
         res = main_loop => {
             if let Err(e) = res {
