@@ -19,11 +19,12 @@ pub fn build_200_ok_with_sdp(
     config: &AppConfig,
     remote_addr: SocketAddr,
 ) -> String {
+    // KRİTİK DÜZELTME: SDP'nin 'c' satırında, telekom operatörünün RTP paketlerini
+    // göndereceği PUBLIC IP adresi belirtilir. Bu, sesin platforma ulaşabilmesi için zorunludur.
     let sdp_body = format!(
         "v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
         rand::thread_rng().gen::<u32>(),
-        // Kendi dinlediği (iç ağ) IP'sini kullanır. Gateway bunu değiştirecek.
-        config.sip_listen_addr.ip(), 
+        config.media_service_public_ip, // Dış dünyaya açık medya IP adresi
         rtp_port
     );
     create_response("200 OK", response_headers, Some(&sdp_body), config, remote_addr)
@@ -46,7 +47,9 @@ pub fn create_response(
     let from_header = headers.get("From").unwrap_or(&empty_string);
     let to_header = headers.get("To").unwrap_or(&empty_string);
     
-    // Kendi dinlediği adresi (iç ağ adresi) Contact olarak bildirir.
+    // NOT: Bu Contact başlığı, iç ağdaki iletişim için doğrudur. Gateway,
+    // bu başlığı dış dünyaya göndermeden önce kendi PUBLIC IP'si ile yeniden yazacaktır.
+    // Bu, Sorumlulukların Ayrıştırılması ilkesinin bir parçasıdır.
     let contact_header = format!("<sip:{}@{}>", "sentiric-signal", config.sip_listen_addr);
 
     let www_authenticate_line = headers.get("WWW-Authenticate").map(|val| format!("WWW-Authenticate: {}\r\n", val)).unwrap_or_default();
