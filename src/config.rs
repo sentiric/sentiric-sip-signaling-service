@@ -38,16 +38,12 @@ impl fmt::Debug for AppConfig {
 impl AppConfig {
     pub fn load_from_env() -> Result<Self, Box<dyn Error>> {
         
-        dotenvy::dotenv().ok(); // Bu satır artık Cargo.toml ile uyumlu.
+        dotenvy::dotenv().ok();
         
-        // Kendi dinleyeceği adres ve portu `network.env`'den alır.
-        let sip_host = env::var("SIP_SIGNALING_HOST")
-            .expect("ZORUNLU: SIP_SIGNALING_HOST eksik");
         let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT")
             .unwrap_or_else(|_| "13024".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
 
-        // Redis URL'sini SSL durumuna göre ayarlar.
         let redis_use_ssl_str = env::var("REDIS_USE_SSL").unwrap_or_else(|_| "false".to_string());
         let redis_use_ssl = redis_use_ssl_str.parse::<bool>().unwrap_or(false);
         let redis_url_from_env = env::var("REDIS_URL")?;
@@ -63,19 +59,17 @@ impl AppConfig {
         Ok(AppConfig {
             env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
             service_version,
-            sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
+            sip_listen_addr: format!("0.0.0.0:{}", sip_port).parse()?,
             sip_realm: env::var("SIP_SIGNALING_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
             rabbitmq_url: env::var("RABBITMQ_URL")?,
             redis_url,
             
-            // --- KRİTİK DEĞİŞİKLİK: Artık HEDEF (_TARGET_) URL'lerini okuyoruz ---
             media_service_url: env::var("MEDIA_SERVICE_TARGET_GRPC_URL")
                 .expect("ZORUNLU: MEDIA_SERVICE_TARGET_GRPC_URL eksik"),
             user_service_url: env::var("USER_SERVICE_TARGET_GRPC_URL")
                 .expect("ZORUNLU: USER_SERVICE_TARGET_GRPC_URL eksik"),
             dialplan_service_url: env::var("DIALPLAN_SERVICE_TARGET_GRPC_URL")
                 .expect("ZORUNLU: DIALPLAN_SERVICE_TARGET_GRPC_URL eksik"),
-            // --- DEĞİŞİKLİK SONA ERDİ ---
             
             cert_path: env::var("SIP_SIGNALING_CERT_PATH")?,
             key_path: env::var("SIP_SIGNALING_KEY_PATH")?,
