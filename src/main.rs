@@ -76,7 +76,8 @@ async fn main() -> Result<(), ServiceError> {
     );
 
     let shared_state: SharedAppState = Arc::new(Mutex::new(None));
-    let sock = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
+    // DÜZELTME: Derleyiciye yardımcı olmak için tipini açıkça belirtiyoruz.
+    let sock: Arc<UdpSocket> = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
     info!(address = %config.sip_listen_addr, "✅ UDP SIP dinleyici hemen başlatıldı.");
     
     let state_clone_for_init = shared_state.clone();
@@ -135,8 +136,8 @@ async fn main() -> Result<(), ServiceError> {
             Ok(mut state) => {
                 state.connect_rabbitmq().await;
                 let final_state = Arc::new(state);
-                
-                // Zaman aşımına uğramış çağrıları temizlemek için arka plan görevini başlat
+
+                // Zaman aşımına uğramış çağrıları temizlemek için arka plan görevini başlat                
                 tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
                 
                 *state_clone_for_init.lock().await = Some(final_state);
@@ -148,9 +149,9 @@ async fn main() -> Result<(), ServiceError> {
             }
         }
     });
-    
-    // Ana UDP dinleme döngüsü
-    let main_loop = async {
+        
+        // Ana UDP dinleme döngüsü
+        let main_loop = async {
         let mut buf = [0; 65535];
         loop {
             let (len, addr) = sock.recv_from(&mut buf).await?;

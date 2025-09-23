@@ -1,7 +1,6 @@
 // sentiric-sip-signaling-service/src/config.rs
 use anyhow::{Context, Result}; // Hata yönetimi için anyhow kullanmak daha iyi.
 use std::env;
-use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
 
@@ -32,6 +31,7 @@ pub struct AppConfig {
 }
 
 impl fmt::Debug for AppConfig {
+
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppConfig")
             .field("env", &self.env)
@@ -46,9 +46,10 @@ impl fmt::Debug for AppConfig {
 }
 
 impl AppConfig {
-    pub fn load_from_env() -> Result<Self, Box<dyn Error>> {
+    // DİKKAT: Fonksiyon imzası Result<Self, anyhow::Error> olarak değiştirildi.
+    pub fn load_from_env() -> Result<Self> { 
         dotenvy::dotenv().ok();
-
+        
         let service_version = env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
         let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT").unwrap_or_else(|_| "13024".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
