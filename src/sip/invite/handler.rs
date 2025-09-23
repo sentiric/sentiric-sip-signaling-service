@@ -35,14 +35,17 @@ pub async fn handle(
 
     match orchestrator::setup_and_finalize_call(&context, state.clone()).await {
         Ok(call_info) => {
-            let mut ringing_context = context.clone();
-            ringing_context.headers = call_info.headers.clone(); // to_tag'li header'ları al
-            let ringing_response = responses::build_180_ringing(&ringing_context, &state.config);
+            // Yanıtlar için de CallContext kullanmak en doğrusu. 
+            // `call_info`'dan bir `CallContext` oluşturuyoruz.
+            let mut response_context = context.clone();
+            response_context.headers = call_info.headers; // to_tag'li header'ları al
+
+            let ringing_response = responses::build_180_ringing(&response_context, &state.config);
             sock.send_to(ringing_response.as_bytes(), call_info.remote_addr).await?;
             
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             
-            let ok_response = responses::build_200_ok_with_sdp(&ringing_context, call_info.rtp_port, &state.config);
+            let ok_response = responses::build_200_ok_with_sdp(&response_context, call_info.rtp_port, &state.config);
             sock.send_to(ok_response.as_bytes(), call_info.remote_addr).await?;
         }
         Err(e) => {
@@ -59,13 +62,11 @@ pub async fn handle(
 async fn check_and_handle_duplicate(call_id: &str, redis_client: &Arc<crate::redis::Client>) -> Result<bool, ServiceError> {
     let mut conn = redis_client.get_multiplexed_async_connection().await?;
     let invite_lock_key = format!("processed_invites:{}", call_id);
-    
     let is_first_invite: bool = conn.set_nx(&invite_lock_key, true).await?;
     if !is_first_invite {
         warn!("Yinelenen INVITE isteği alındı (Redis atomik kilit), görmezden geliniyor.");
         return Ok(true);
     }
-    
     conn.expire::<_, ()>(&invite_lock_key, 30).await?;
     Ok(false)
 }
