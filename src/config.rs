@@ -1,5 +1,5 @@
 // sentiric-sip-signaling-service/src/config.rs
-use anyhow::{Context, Result}; // Hata yönetimi için anyhow kullanmak daha iyi.
+use anyhow::{Context, Result}; // DÜZELTME: Bu satır en kritik eklemedir. .context() metodunu scope'a dahil eder.
 use std::env;
 use std::fmt;
 use std::net::SocketAddr;
@@ -16,14 +16,14 @@ pub struct AppConfig {
     pub ca_path: String,
 
     // --- Ağ Adresleri (İç) ---
-    pub sip_listen_addr: SocketAddr, // Bu servisin dinleyeceği iç adres
-    pub sip_realm: String, // SIP kimlik doğrulaması için alan adı
+    pub sip_listen_addr: SocketAddr,
+    pub sip_realm: String,
 
     // --- Ağ Adresleri (Dış ve Hedefler) ---
-    pub media_service_public_ip: String, // SDP'de kullanılacak DIŞ IP
-    pub media_service_url: String, // Bağlanılacak media-service'in İÇ adresi
-    pub dialplan_service_url: String, // Bağlanılacak dialplan-service'in İÇ adresi
-    pub user_service_url: String, // Bağlanılacak user-service'in İÇ adresi
+    pub media_service_public_ip: String,
+    pub media_service_url: String,
+    pub dialplan_service_url: String,
+    pub user_service_url: String,
 
     // --- Altyapı Bağlantıları ---
     pub rabbitmq_url: String,
@@ -31,7 +31,6 @@ pub struct AppConfig {
 }
 
 impl fmt::Debug for AppConfig {
-
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppConfig")
             .field("env", &self.env)
@@ -41,12 +40,12 @@ impl fmt::Debug for AppConfig {
             .field("user_service_url", &self.user_service_url)
             .field("dialplan_service_url", &self.dialplan_service_url)
             .field("media_service_url", &self.media_service_url)
-            .finish_non_exhaustive() // Geri kalanları gösterme
+            .finish_non_exhaustive()
     }
 }
 
 impl AppConfig {
-    // DİKKAT: Fonksiyon imzası Result<Self, anyhow::Error> olarak değiştirildi.
+    // DÜZELTME: Fonksiyon imzası artık Box<dyn Error> yerine anyhow::Result kullanıyor.
     pub fn load_from_env() -> Result<Self> { 
         dotenvy::dotenv().ok();
         
