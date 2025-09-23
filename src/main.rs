@@ -104,7 +104,8 @@ async fn main() -> Result<()> {
             info!(from = %addr, bytes_received = len, "UDP paketi alındı, işleyiciye yönlendiriliyor.");
             let locked_state = shared_state.lock().await;
             if let Some(state) = locked_state.as_ref() {
-                tokio::spawn(handle_sip_request(request_bytes, Arc::clone(&sock), addr, state.clone()));
+                // --- KRİTİK DEĞİŞİKLİK BURADA: Artık `spawn` etmiyoruz, `await` ile bekliyoruz ---
+                handle_sip_request(request_bytes, Arc::clone(&sock), addr, state.clone()).await;
             } else {
                 warn!(from = %addr, "Servis henüz başlatılıyor, isteğe 503 Service Unavailable yanıtı veriliyor.");
                 let request_str = String::from_utf8_lossy(&request_bytes);
