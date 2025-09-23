@@ -1,16 +1,12 @@
-// File: src/sip/utils.rs
-
+// sentiric-sip-signaling-service/src/sip/utils.rs
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
 use tracing::{info, warn};
-
-// --- DEĞİŞİKLİK BURADA BAŞLIYOR ---
 use crate::config::AppConfig;
-use crate::state::ActiveCallInfo; // `state` modülünü doğru yoldan import ediyoruz.
-use rand::Rng; // `sample_iter` için gerekli trait.
-use tracing::instrument; // `instrument` makrosu için gerekli.
-// --- DEĞİŞİKLİK SONA ERİYOR ---
+use crate::state::ActiveCallInfo;
+use rand::Rng;
+use tracing::instrument;
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 
@@ -21,18 +17,21 @@ pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
             break;
         }
         if let Some((key, value)) = line.split_once(':') {
-            headers.insert(key.trim().to_string(), value.trim().to_string());
+            // DÜZELTME: Anahtarı her zaman küçük harfe çevirerek sakla.
+            headers.insert(key.trim().to_lowercase(), value.trim().to_string());
         }
     }
     
-    if headers.contains_key("Via") {
+    // DÜZELTME: Kontrolü de küçük harfle yap.
+    if headers.contains_key("via") {
         Some(headers)
     } else {
-        warn!("Gelen SIP isteğinde Via başlığı bulunamadı (Gateway'den gelmemiş olabilir).");
+        warn!("Gelen SIP isteğinde 'via' başlığı bulunamadı (Gateway'den gelmemiş olabilir).");
         None
     }
 }
 
+// ... (dosyanın geri kalanı aynı) ...
 pub fn get_uri_from_header(header: &str) -> Option<String> {
     header.find('<').and_then(|start| header.find('>').map(|end| header[start + 1..end].to_string()))
 }
