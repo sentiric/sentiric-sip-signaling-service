@@ -37,7 +37,8 @@ impl fmt::Debug for AppConfig {
 
 impl AppConfig {
     pub fn load_from_env() -> Result<Self, Box<dyn Error>> {
-        dotenvy::dotenv().ok();
+        
+        dotenvy::dotenv().ok(); // Bu satır artık Cargo.toml ile uyumlu.
         
         // Kendi dinleyeceği adres ve portu `network.env`'den alır.
         let sip_host = env::var("SIP_SIGNALING_HOST")

@@ -15,7 +15,9 @@ tracing = "0.1"
 rand = "0.8"
 tokio-util = "0.7"
 regex = "1"
-dotenv = "0.15"
+# --- DEĞİŞİKLİK BURADA ---
+dotenvy = "0.15" # dotenv -> dotenvy
+# --- DEĞİŞİKLİK SONA ERDİ ---
 once_cell = "1.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 prost = "0.12"
