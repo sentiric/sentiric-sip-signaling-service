@@ -1,8 +1,7 @@
-// sentiric-sip-signaling-service/src/sip/register.rs
 use crate::app_state::AppState;
 use crate::redis::{self, AsyncCommands};
-use crate::sip::responses::create_response;
-use crate::sip::utils::parse_complex_headers;
+use crate::sip::call_context::CallContext;
+use crate::sip::responses::create_response_from_parts; // DÜZELTME: create_response yerine bunu kullanacağız.
 use md5::compute;
 use rand::distributions::{Alphanumeric, DistString};
 use sentiric_contracts::sentiric::user::v1::GetSipCredentialsRequest;
@@ -12,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tonic::Request as TonicRequest;
-use tracing::{error, info, instrument, warn, Span};
+use tracing::{info, instrument, warn, Span};
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id))]
 pub async fn handle(
@@ -21,21 +20,38 @@ pub async fn handle(
     addr: SocketAddr,
     state: Arc<AppState>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (headers, via_headers) = parse_complex_headers(request_str).ok_or("Geçersiz başlıklar")?;
-    let call_id = headers.get("call-id").cloned().unwrap_or_default();
-    Span::current().record("call_id", &call_id as &str);
-    
-    if let Some(auth_header) = headers.get("authorization") {
-        verify_authentication(auth_header, headers, via_headers, sock, addr, state).await
+    let context = CallContext::from_request(request_str, addr, "register-trace".to_string())?;
+    Span::current().record("call_id", &context.call_id as &str);
+
+    if let Some(auth_header) = context.headers.get("authorization") {
+        // --- DÜZELTME BURADA ---
+        verify_authentication(
+            auth_header,
+            context.headers.clone(),
+            context.via_headers.clone(),
+            sock,
+            context.remote_addr,
+            state,
+        ).await
     } else {
         let mut conn = state.redis.get_multiplexed_async_connection().await?;
-        let key = format!("pending_reg:{}", call_id);
-        if conn.exists(&key).await? {
+        let key = format!("pending_reg:{}", context.call_id);
+        let exists: bool = conn.exists(&key).await?;
+
+        if exists {
             warn!("Kısa süre içinde aynı Call-ID ile tekrar REGISTER isteği alındı, görmezden geliniyor.");
             return Ok(());
         }
+
         let _: () = conn.set_ex(&key, true, 10).await?;
-        challenge_client(headers, via_headers, sock, addr, state).await
+        // --- DÜZELTME BURADA ---
+        challenge_client(
+            context.headers.clone(),
+            context.via_headers.clone(),
+            sock,
+            context.remote_addr,
+            state,
+        ).await
     }
 }
 
@@ -51,7 +67,8 @@ async fn challenge_client(
     let auth_challenge = format!(r#"Digest realm="{}", qop="auth", nonce="{}""#, state.config.sip_realm, nonce);
     headers.insert("www-authenticate".to_string(), auth_challenge);
 
-    let response = create_response("401 Unauthorized", &via_headers, &headers, None, &state.config, addr);
+    // --- DÜZELTME BURADA ---
+    let response = create_response_from_parts("401 Unauthorized", &headers, &via_headers, None, &state.config, addr);
     sock.send_to(response.as_bytes(), addr).await?;
     Ok(())
 }
@@ -83,7 +100,8 @@ async fn verify_authentication(
 
     if let Err(e) = creds_res {
         warn!(error = %e, "SIP kullanıcısı bulunamadı veya user-service hatası.");
-        let response = create_response("403 Forbidden", &via_headers, &headers, None, &state.config, addr);
+        // --- DÜZELTME BURADA ---
+        let response = create_response_from_parts("403 Forbidden", &headers, &via_headers, None, &state.config, addr);
         sock.send_to(response.as_bytes(), addr).await?;
         return Ok(());
     }
@@ -109,12 +127,14 @@ async fn verify_authentication(
             redis::set_registration(&state.redis, &aor, &contact_uri, expires).await?;
         }
         
-        headers.insert("Contact".to_string(), format!("{};expires={}", contact_uri, expires));
-        let response = create_response("200 OK", &via_headers, &headers, None, &state.config, addr);
+        headers.insert("contact".to_string(), format!("{};expires={}", contact_uri, expires)); // DÜZELTME: Küçük harf
+        // --- DÜZELTME BURADA ---
+        let response = create_response_from_parts("200 OK", &headers, &via_headers, None, &state.config, addr);
         sock.send_to(response.as_bytes(), addr).await?;
     } else {
         warn!("Kimlik doğrulama başarısız. Yanlış şifre.");
-        let response = create_response("403 Forbidden", &via_headers, &headers, None, &state.config, addr);
+        // --- DÜZELTME BURADA ---
+        let response = create_response_from_parts("403 Forbidden", &headers, &via_headers, None, &state.config, addr);
         sock.send_to(response.as_bytes(), addr).await?;
     }
     Ok(())

@@ -1,17 +1,13 @@
-// sentiric-sip-signaling-service/src/sip/utils.rs
-use super::call_context::CallContext; // `call_context`'e erişim için
 use crate::config::AppConfig;
 use crate::state::ActiveCallInfo;
 use once_cell::sync::Lazy;
-use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
 use regex::Regex;
 use std::collections::HashMap;
-use tracing::{info, instrument, warn};
+use tracing::{instrument, warn}; // 'info' kullanılmadığı için kaldırıldı
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 
-// DÜZELTME: Fonksiyon artık (HashMap, Vec<String>) döndürüyor.
 pub fn parse_sip_headers(header_section: &str) -> Option<(HashMap<String, String>, Vec<String>)> {
     let mut headers = HashMap::new();
     let mut via_headers = Vec::new();
@@ -22,7 +18,6 @@ pub fn parse_sip_headers(header_section: &str) -> Option<(HashMap<String, String
             let key_trimmed = key.trim();
             let key_lower = key_trimmed.to_lowercase();
             
-            // Via başlıklarını sırasıyla bir vektöre ekle.
             if key_lower == "via" || key_lower == "v" {
                 via_headers.push(line.to_string());
             } else {
@@ -39,7 +34,6 @@ pub fn parse_sip_headers(header_section: &str) -> Option<(HashMap<String, String
     }
 }
 
-
 pub fn get_uri_from_header(header: &str) -> Option<String> {
     header.find('<').and_then(|start| header.find('>').map(|end| header[start + 1..end].to_string()))
 }
@@ -53,11 +47,8 @@ pub fn extract_user_from_uri(uri: &str) -> Option<String> {
         } else if num.len() == 10 && !num.starts_with("90") {
             num = format!("90{}", num);
         }
-        let normalized_num = num;
-        if original_num != normalized_num {
-            info!(original = %original_num, normalized = %normalized_num, "Telefon numarası normalize edildi.");
-        }
-        normalized_num
+        // --- DÜZELTME BURADA ---
+        num // 'normalized_num' yerine 'num' döndürülüyor.
     })
 }
 
@@ -81,20 +72,18 @@ pub fn extract_sdp_media_info_from_body(sip_body: &str) -> Option<String> {
 
 #[instrument(skip_all, fields(call_id = %call_info.call_id))]
 pub fn create_bye_request(call_info: &ActiveCallInfo, config: &AppConfig) -> String {
-    let cseq_line = call_info.headers.get("CSeq").cloned().unwrap_or_default();
+    let cseq_line = call_info.headers.get("cseq").cloned().unwrap_or_default();
     let cseq_num = cseq_line.split_whitespace().next().unwrap_or("1").parse::<u32>().unwrap_or(1) + 1;
     let request_uri = get_uri_from_header(&call_info.contact_header)
         .unwrap_or_else(|| call_info.contact_header.clone());
     
     let mut lines = Vec::new();
     lines.push(format!("BYE {} SIP/2.0", request_uri));
-
-    let branch: String = rand::thread_rng().sample_iter(&rand::distributions::Alphanumeric).take(16).map(char::from).collect();
+    let branch: u32 = rand::thread_rng().gen();
     lines.push(format!("Via: SIP/2.0/UDP {}:{};branch=z9hG4bK.{}", 
         config.sip_listen_addr.ip(), 
         config.sip_listen_addr.port(), 
         branch));
-    
     lines.push(format!("Max-Forwards: 70"));
     lines.push(format!("From: {};tag={}", call_info.to_header, call_info.to_tag));
     lines.push(format!("To: {}", call_info.from_header));
@@ -102,6 +91,5 @@ pub fn create_bye_request(call_info: &ActiveCallInfo, config: &AppConfig) -> Str
     lines.push(format!("CSeq: {} BYE", cseq_num));
     lines.push(format!("User-Agent: Sentiric Signaling Service v{}", config.service_version));
     lines.push(format!("Content-Length: 0"));
-    
     lines.join("\r\n") + "\r\n\r\n"
 }

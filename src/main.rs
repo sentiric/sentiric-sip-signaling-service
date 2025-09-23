@@ -1,8 +1,7 @@
-// sentiric-sip-signaling-service/src/main.rs
 use anyhow::Result;
 use rustls::crypto::{ring::default_provider, CryptoProvider};
 use sentiric_contracts::sentiric::sip::v1::sip_signaling_service_server::SipSignalingServiceServer;
-use sip::{call_context::CallContext, handler::handle_sip_request, responses::create_response, utils::parse_complex_headers};
+use sip::{call_context::CallContext, handler::handle_sip_request, responses::create_response};
 use state::cleanup_old_transactions;
 use std::{env, process, sync::Arc, time::Duration};
 use tokio::{net::UdpSocket, select, signal, sync::Mutex};
@@ -110,9 +109,8 @@ async fn main() -> Result<()> {
                 warn!(from = %addr, "Servis henüz başlatılıyor, isteğe 503 Service Unavailable yanıtı veriliyor.");
                 let request_str = String::from_utf8_lossy(&request_bytes);
                 if request_str.starts_with("INVITE") {
-                     // DÜZELTME: Artık CallContext oluşturmaya çalışmıyoruz.
-                    if let Some((headers, via_headers)) = parse_complex_headers(&request_str) {
-                        let response = create_response("503 Service Unavailable", &via_headers, &headers, None, &config, addr);
+                    if let Ok(context) = CallContext::from_request(&request_str, addr, "uninitialized-trace".to_string()) {
+                        let response = create_response("503 Service Unavailable", &context, None, &config);
                         let _ = sock.send_to(response.as_bytes(), addr).await;
                     }
                 }

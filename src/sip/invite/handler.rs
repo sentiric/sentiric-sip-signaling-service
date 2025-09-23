@@ -1,4 +1,3 @@
-// sentiric-sip-signaling-service/src/sip/invite/handler.rs
 use super::orchestrator;
 use crate::app_state::AppState;
 use crate::error::ServiceError;
@@ -35,17 +34,12 @@ pub async fn handle(
 
     match orchestrator::setup_and_finalize_call(&context, state.clone()).await {
         Ok(call_info) => {
-            // Yanıtlar için de CallContext kullanmak en doğrusu. 
-            // `call_info`'dan bir `CallContext` oluşturuyoruz.
-            let mut response_context = context.clone();
-            response_context.headers = call_info.headers; // to_tag'li header'ları al
-
-            let ringing_response = responses::build_180_ringing(&response_context, &state.config);
+            let ringing_response = responses::build_180_ringing(&call_info.headers, &call_info.via_headers, &state.config, call_info.remote_addr);
             sock.send_to(ringing_response.as_bytes(), call_info.remote_addr).await?;
             
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             
-            let ok_response = responses::build_200_ok_with_sdp(&response_context, call_info.rtp_port, &state.config);
+            let ok_response = responses::build_200_ok_with_sdp(&call_info.headers, &call_info.via_headers, call_info.rtp_port, &state.config, call_info.remote_addr);
             sock.send_to(ok_response.as_bytes(), call_info.remote_addr).await?;
         }
         Err(e) => {

@@ -1,3 +1,5 @@
+// *** BU DOSYA, YANLIŞLIKLA DÜZENLEDİĞİNİZ DOSYADIR ***
+// İçeriği, tutarlılık için diğer orchestrator.rs dosyasıyla aynı yapıldı.
 use crate::app_state::AppState;
 use crate::error::ServiceError;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
@@ -29,7 +31,7 @@ pub async fn setup_and_finalize_call(
     let mut response_headers = context.headers.clone();
     let to_tag: u32 = rand::thread_rng().gen();
     response_headers
-        .entry("To".to_string())
+        .entry("to".to_string())
         .and_modify(|v| *v = format!("{};tag={}", v, to_tag));
     
     let call_info = ActiveCallInfo {
@@ -39,6 +41,7 @@ pub async fn setup_and_finalize_call(
         to_tag: to_tag.to_string(),
         created_at: std::time::Instant::now(),
         headers: response_headers.clone(),
+        via_headers: context.via_headers.clone(),
         call_id: context.call_id.clone(),
         from_header: context.from_header.clone(),
         to_header: context.to_header.clone(),
@@ -106,7 +109,7 @@ async fn publish_call_event(
     event_type: &str,
     call_info: &ActiveCallInfo,
     dialplan_res: Option<&ResolveDialplanResponse>,
-    rabbit_channel: &Arc<LapinChannel>,
+    rabbit_channel: &Arc<lapin::Channel>,
 ) -> Result<(), ServiceError> {
     let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body);
     let mut event_payload = serde_json::json!({
@@ -118,8 +121,8 @@ async fn publish_call_event(
 
     if event_type == "call.started" {
         let media_info = serde_json::json!({
-            "server_rtp_port": call_info.rtp_port,
-            "caller_rtp_addr": sdp_info
+            "serverRtpPort": call_info.rtp_port,
+            "callerRtpAddr": sdp_info
         });
         
         if let serde_json::Value::Object(map) = &mut event_payload {
@@ -144,9 +147,6 @@ async fn publish_call_event(
         event_payload = %event_payload.to_string(),
         "{} olayı yayınlanıyor (tam içerik).", event_type
     );
-    
-    // Asıl INFO logu bu olmalı
-    info!("'{}' olayı yayınlanıyor.", event_type);
 
     rabbit_channel.basic_publish(
         RABBITMQ_EXCHANGE_NAME,

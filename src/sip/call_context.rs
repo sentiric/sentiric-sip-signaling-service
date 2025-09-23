@@ -1,4 +1,3 @@
-// sentiric-sip-signaling-service/src/sip/call_context.rs
 use crate::error::ServiceError;
 use crate::sip::utils;
 use std::collections::HashMap;
@@ -26,15 +25,14 @@ impl CallContext {
         let header_part = parts.get(0).unwrap_or(&"");
         let raw_body = parts.get(1).unwrap_or(&"").to_string();
         
-        let (mut headers, via_headers) = utils::parse_complex_headers(header_part)
+        let (headers, via_headers) = utils::parse_sip_headers(header_part)
             .ok_or_else(|| ServiceError::SipParse("SIP başlıkları ayrıştırılamadı".to_string()))?;
         
-        let call_id = headers.remove("call-id").unwrap_or_default();
-        let from_header = headers.remove("from").unwrap_or_default();
-        let to_header = headers.remove("to").unwrap_or_default();
-        let contact_header = headers.remove("contact").unwrap_or_default();
-        let record_route_header = headers.remove("record-route");
-        
+        let call_id = headers.get("call-id").cloned().unwrap_or_default();
+        let from_header = headers.get("from").cloned().unwrap_or_default();
+        let to_header = headers.get("to").cloned().unwrap_or_default();
+        let contact_header = headers.get("contact").cloned().unwrap_or_default();
+        let record_route_header = headers.get("record-route").cloned();
         let caller_id = utils::extract_user_from_uri(&from_header).unwrap_or_else(|| "unknown".to_string());
         let destination_number = utils::extract_user_from_uri(&to_header).unwrap_or_else(|| "unknown".to_string());
 

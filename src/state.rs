@@ -1,4 +1,3 @@
-// ========== DOSYA: sentiric-sip-signaling-service/src/state.rs (TAM VE GÜNCEL İÇERİK) ==========
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,6 +13,7 @@ pub struct ActiveCallInfo {
     pub to_tag: String,
     pub created_at: Instant,
     pub headers: HashMap<String, String>,
+    pub via_headers: Vec<String>, // DÜZELTME: Via başlıklarını saklamak için
     pub call_id: String,
     pub from_header: String,
     pub to_header: String,
@@ -21,11 +21,11 @@ pub struct ActiveCallInfo {
     #[allow(dead_code)]
     pub record_route_header: Option<String>,
     pub raw_body: String,
-    // YENİ ALAN: 'call.answered' olayının gönderilip gönderilmediğini takip eder.
     pub answered_event_published: Arc<Mutex<bool>>, 
 }
 
 pub type ActiveCalls = Arc<Mutex<HashMap<String, ActiveCallInfo>>>;
+
 
 pub async fn cleanup_old_transactions(transactions: ActiveCalls) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
