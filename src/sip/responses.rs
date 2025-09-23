@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tracing::debug;
 
-
 pub fn build_180_ringing(
     response_headers: &HashMap<String, String>,
     config: &AppConfig,
@@ -23,13 +22,13 @@ pub fn build_200_ok_with_sdp(
     let sdp_body = format!(
         "v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
         rand::thread_rng().gen::<u32>(),
-        config.sip_public_ip,
+        // Kendi dinlediği (iç ağ) IP'sini kullanır. Gateway bunu değiştirecek.
+        config.sip_listen_addr.ip(), 
         rtp_port
     );
     create_response("200 OK", response_headers, Some(&sdp_body), config, remote_addr)
 }
 
-// Diğer modüllerin (bye, register) genel yanıtlar oluşturması için gereklidir.
 pub fn create_response(
     status_line: &str,
     headers: &HashMap<String, String>,
@@ -46,10 +45,12 @@ pub fn create_response(
     let via_line = format!("Via: {}\r\n", via);
     let from_header = headers.get("From").unwrap_or(&empty_string);
     let to_header = headers.get("To").unwrap_or(&empty_string);
-    let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
+    
+    // Kendi dinlediği adresi (iç ağ adresi) Contact olarak bildirir.
+    let contact_header = format!("<sip:{}@{}>", "sentiric-signal", config.sip_listen_addr);
+
     let www_authenticate_line = headers.get("WWW-Authenticate").map(|val| format!("WWW-Authenticate: {}\r\n", val)).unwrap_or_default();
     
-    // GÜNCELLENDİ: Server başlığı artık dinamik olarak AppConfig'den geliyor.
     let server_header = format!("Server: Sentiric Signaling Service v{}", config.service_version);
 
     let response_string = format!(

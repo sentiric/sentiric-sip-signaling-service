@@ -7,7 +7,6 @@ use std::net::SocketAddr;
 #[derive(Clone)]
 pub struct AppConfig {
     pub sip_listen_addr: SocketAddr,
-    pub sip_public_ip: String,
     pub dialplan_service_url: String,
     pub media_service_url: String,
     pub user_service_url: String,
@@ -16,7 +15,6 @@ pub struct AppConfig {
     pub env: String,
     pub sip_realm: String,
     pub service_version: String,
-    // --- YENİ ALANLAR ---
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
@@ -26,7 +24,6 @@ impl fmt::Debug for AppConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppConfig")
             .field("sip_listen_addr", &self.sip_listen_addr)
-            .field("sip_public_ip", &self.sip_public_ip)
             .field("dialplan_service_url", &self.dialplan_service_url)
             .field("media_service_url", &self.media_service_url)
             .field("user_service_url", &self.user_service_url)
@@ -40,11 +37,16 @@ impl fmt::Debug for AppConfig {
 
 impl AppConfig {
     pub fn load_from_env() -> Result<Self, Box<dyn Error>> {
-        dotenv::dotenv().ok();
-        let sip_host = env::var("SIP_SIGNALING_LISTEN_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
-        let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT").unwrap_or_else(|_| "5060".to_string());
+        dotenvy::dotenv().ok();
+        
+        // Kendi dinleyeceği adres ve portu `network.env`'den alır.
+        let sip_host = env::var("SIP_SIGNALING_HOST")
+            .expect("ZORUNLU: SIP_SIGNALING_HOST eksik");
+        let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT")
+            .unwrap_or_else(|_| "13024".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;
 
+        // Redis URL'sini SSL durumuna göre ayarlar.
         let redis_use_ssl_str = env::var("REDIS_USE_SSL").unwrap_or_else(|_| "false".to_string());
         let redis_use_ssl = redis_use_ssl_str.parse::<bool>().unwrap_or(false);
         let redis_url_from_env = env::var("REDIS_URL")?;
@@ -60,15 +62,20 @@ impl AppConfig {
         Ok(AppConfig {
             env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
             service_version,
-            sip_public_ip: env::var("SIP_SIGNALING_IPV4_EXTERNAL_ADDRESS")?,
             sip_listen_addr: format!("{}:{}", sip_host, sip_port).parse()?,
             sip_realm: env::var("SIP_SIGNALING_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
             rabbitmq_url: env::var("RABBITMQ_URL")?,
             redis_url,
-            media_service_url: env::var("MEDIA_SERVICE_GRPC_URL")?,
-            user_service_url: env::var("USER_SERVICE_GRPC_URL")?,
-            dialplan_service_url: env::var("DIALPLAN_SERVICE_GRPC_URL")?,            
-            // --- YENİ ALANLAR ---
+            
+            // --- KRİTİK DEĞİŞİKLİK: Artık HEDEF (_TARGET_) URL'lerini okuyoruz ---
+            media_service_url: env::var("MEDIA_SERVICE_TARGET_GRPC_URL")
+                .expect("ZORUNLU: MEDIA_SERVICE_TARGET_GRPC_URL eksik"),
+            user_service_url: env::var("USER_SERVICE_TARGET_GRPC_URL")
+                .expect("ZORUNLU: USER_SERVICE_TARGET_GRPC_URL eksik"),
+            dialplan_service_url: env::var("DIALPLAN_SERVICE_TARGET_GRPC_URL")
+                .expect("ZORUNLU: DIALPLAN_SERVICE_TARGET_GRPC_URL eksik"),
+            // --- DEĞİŞİKLİK SONA ERDİ ---
+            
             cert_path: env::var("SIP_SIGNALING_CERT_PATH")?,
             key_path: env::var("SIP_SIGNALING_KEY_PATH")?,
             ca_path: env::var("GRPC_TLS_CA_PATH")?,

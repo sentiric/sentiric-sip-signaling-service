@@ -21,7 +21,7 @@ services:
       - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
       - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"    
     ports: 
-      - "5061:${SIP_SIGNALING_UDP_PORT:-13024}/udp"
+      - "${SIP_SIGNALING_UDP_PORT:-13024}:${SIP_SIGNALING_UDP_PORT:-13024}/udp"
     networks:
       sentiric-net:
         ipv4_address: ${SIP_SIGNALING_IPV4_ADDRESS}
