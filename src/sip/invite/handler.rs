@@ -1,17 +1,16 @@
-// File: src/sip/invite/handler.rs
+// sentiric-sip-signaling-service/src/sip/invite/handler.rs
 use super::orchestrator;
 use crate::app_state::AppState;
 use crate::error::ServiceError;
 use crate::redis::AsyncCommands;
 use crate::sip::call_context::CallContext;
-use crate::sip::responses; // DÜZELTME: Doğrudan ana responses modülünü kullanıyoruz.
+use crate::sip::responses;
 use rand::distributions::{Alphanumeric, DistString};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::time::sleep;
-use tracing::{instrument, warn, Span};
+use tracing::{error, instrument, warn, Span}; // error eklendi
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id, caller, destination))]
 pub async fn handle(
@@ -32,23 +31,29 @@ pub async fn handle(
         return Ok(());
     }
 
-    // DÜZELTME: Doğrudan `responses` modülünden çağrılıyor.
+    // --- YENİ: Hata Yönetimi Bloğu ---
+    // Önce 100 Trying göndererek operatöre isteği aldığımızı bildiriyoruz.
     sock.send_to(responses::create_response("100 Trying", &context.headers, None, &state.config, addr).as_bytes(), addr).await?;
 
+    // Çağrı kurulumunun tamamını tek bir `match` bloğu içinde yönetiyoruz.
     match orchestrator::setup_and_finalize_call(&context, state.clone()).await {
         Ok(call_info) => {
+            // Başarılı olursa, 180 Ringing ve 200 OK gönder.
             sock.send_to(responses::build_180_ringing(&call_info.headers, &state.config, addr).as_bytes(), addr).await?;
-            sleep(std::time::Duration::from_millis(100)).await;
+            // Araya küçük bir gecikme koymak bazı SIP istemcileri için uyumluluğu artırır.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             
             let ok_response = responses::build_200_ok_with_sdp(&call_info.headers, call_info.rtp_port, &state.config, addr);
             sock.send_to(ok_response.as_bytes(), addr).await?;
         }
         Err(e) => {
-            warn!(error = %e, "Çağrı kurulumu orkestrasyonu başarısız oldu.");
+            // Hata olursa, hatayı logla ve 503 Service Unavailable gönder.
+            error!(error = %e, "Çağrı kurulumu orkestrasyonu başarısız oldu.");
             let error_response = responses::create_response("503 Service Unavailable", &context.headers, None, &state.config, addr);
             sock.send_to(error_response.as_bytes(), addr).await?;
         }
     }
+    // --- Hata Yönetimi Bloğu Sonu ---
 
     Ok(())
 }
@@ -58,12 +63,16 @@ async fn check_and_handle_duplicate(call_id: &str, redis_client: &Arc<crate::red
     let mut conn = redis_client.get_multiplexed_async_connection().await?;
     let invite_lock_key = format!("processed_invites:{}", call_id);
     
+    // set_nx (set if not exists) atomik bir operasyondur.
+    // Eğer anahtar yoksa `true` döner ve anahtarı oluşturur.
+    // Eğer anahtar varsa `false` döner.
     let is_first_invite: bool = conn.set_nx(&invite_lock_key, true).await?;
     if !is_first_invite {
         warn!("Yinelenen INVITE isteği alındı (Redis atomik kilit), görmezden geliniyor.");
-        return Ok(true);
+        return Ok(true); // Yinelenen, işlem yapma
     }
     
+    // Anahtarın Redis'te sonsuza kadar kalmaması için bir son kullanma süresi ayarla.
     conn.expire::<_, ()>(&invite_lock_key, 30).await?;
-    Ok(false)
+    Ok(false) // Yinelenen değil, işleme devam et
 }
