@@ -1,37 +1,45 @@
 // sentiric-sip-signaling-service/src/sip/utils.rs
-use once_cell::sync::Lazy;
-use regex::Regex;
-use std::collections::HashMap;
-use tracing::{info, warn};
+use super::call_context::CallContext; // `call_context`'e erişim için
 use crate::config::AppConfig;
 use crate::state::ActiveCallInfo;
+use once_cell::sync::Lazy;
+use rand::distributions::{Alphanumeric, DistString};
 use rand::Rng;
-use tracing::instrument;
+use regex::Regex;
+use std::collections::HashMap;
+use tracing::{info, instrument, warn};
 
 static USER_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"sip:\+?(\d+)@").unwrap());
 
-pub fn parse_complex_headers(request: &str) -> Option<HashMap<String, String>> {
+// DÜZELTME: Fonksiyon artık (HashMap, Vec<String>) döndürüyor.
+pub fn parse_sip_headers(header_section: &str) -> Option<(HashMap<String, String>, Vec<String>)> {
     let mut headers = HashMap::new();
-    for line in request.lines() {
-        if line.is_empty() {
-            break;
-        }
+    let mut via_headers = Vec::new();
+    
+    for line in header_section.lines() {
+        if line.is_empty() { continue; }
         if let Some((key, value)) = line.split_once(':') {
-            // DÜZELTME: Anahtarı her zaman küçük harfe çevirerek sakla.
-            headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+            let key_trimmed = key.trim();
+            let key_lower = key_trimmed.to_lowercase();
+            
+            // Via başlıklarını sırasıyla bir vektöre ekle.
+            if key_lower == "via" || key_lower == "v" {
+                via_headers.push(line.to_string());
+            } else {
+                headers.insert(key_lower, value.trim().to_string());
+            }
         }
     }
     
-    // DÜZELTME: Kontrolü de küçük harfle yap.
-    if headers.contains_key("via") {
-        Some(headers)
+    if !via_headers.is_empty() {
+        Some((headers, via_headers))
     } else {
-        warn!("Gelen SIP isteğinde 'via' başlığı bulunamadı (Gateway'den gelmemiş olabilir).");
+        warn!("Gelen SIP isteğinde 'via' başlığı bulunamadı.");
         None
     }
 }
 
-// ... (dosyanın geri kalanı aynı) ...
+
 pub fn get_uri_from_header(header: &str) -> Option<String> {
     header.find('<').and_then(|start| header.find('>').map(|end| header[start + 1..end].to_string()))
 }

@@ -10,7 +10,7 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{error, instrument, warn, Span}; // error eklendi
+use tracing::{error, instrument, warn, Span};
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id, caller, destination))]
 pub async fn handle(
@@ -31,33 +31,27 @@ pub async fn handle(
         return Ok(());
     }
 
-    // --- YENİ: Hata Yönetimi Bloğu ---
-    // Önce 100 Trying göndererek operatöre isteği aldığımızı bildiriyoruz.
-    sock.send_to(responses::create_response("100 Trying", &context.headers, None, &state.config, addr).as_bytes(), addr).await?;
+    // DÜZELTME: Yanıt fonksiyonuna artık context'i veriyoruz.
+    sock.send_to(responses::create_response("100 Trying", &context, None, &state.config).as_bytes(), addr).await?;
 
-    // Çağrı kurulumunun tamamını tek bir `match` bloğu içinde yönetiyoruz.
     match orchestrator::setup_and_finalize_call(&context, state.clone()).await {
         Ok(call_info) => {
-            // Başarılı olursa, 180 Ringing ve 200 OK gönder.
-            sock.send_to(responses::build_180_ringing(&call_info.headers, &state.config, addr).as_bytes(), addr).await?;
-            // Araya küçük bir gecikme koymak bazı SIP istemcileri için uyumluluğu artırır.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            
+            // DÜZELTME: Yanıt fonksiyonlarına artık context yerine call_info'daki headers'ı veriyoruz.
+            // Bu kısım, `setup_and_finalize_call`'dan dönen `to_tag`'li `headers`'ı kullanmalı.
             let ok_response = responses::build_200_ok_with_sdp(&call_info.headers, call_info.rtp_port, &state.config, addr);
+            // `180 Ringing` göndermeden önce `200 OK` göndermek genellikle daha iyidir, çünkü bazı sistemler beklemeyebilir.
             sock.send_to(ok_response.as_bytes(), addr).await?;
         }
         Err(e) => {
-            // Hata olursa, hatayı logla ve 503 Service Unavailable gönder.
             error!(error = %e, "Çağrı kurulumu orkestrasyonu başarısız oldu.");
-            let error_response = responses::create_response("503 Service Unavailable", &context.headers, None, &state.config, addr);
+            // DÜZELTME: Yanıt fonksiyonuna context'i veriyoruz.
+            let error_response = responses::create_response("503 Service Unavailable", &context, None, &state.config);
             sock.send_to(error_response.as_bytes(), addr).await?;
         }
     }
-    // --- Hata Yönetimi Bloğu Sonu ---
-
+    
     Ok(())
 }
-
 #[instrument(skip(redis_client))]
 async fn check_and_handle_duplicate(call_id: &str, redis_client: &Arc<crate::redis::Client>) -> Result<bool, ServiceError> {
     let mut conn = redis_client.get_multiplexed_async_connection().await?;
