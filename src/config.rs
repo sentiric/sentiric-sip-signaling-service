@@ -1,36 +1,29 @@
 // sentiric-sip-signaling-service/src/config.rs
-use anyhow::{Context, Result}; // DÜZELTME: Bu satır en kritik eklemedir. .context() metodunu scope'a dahil eder.
+use anyhow::{Context, Result}; 
 use std::env;
 use std::fmt;
 use std::net::SocketAddr;
 
 #[derive(Clone)]
 pub struct AppConfig {
-    // --- Gözlemlenebilirlik & Ortam ---
+    // ... (struct içeriği aynı kalıyor) ...
     pub env: String,
     pub service_version: String,
-
-    // --- Güvenlik (mTLS Sertifikaları) ---
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
-
-    // --- Ağ Adresleri (İç) ---
     pub sip_listen_addr: SocketAddr,
     pub sip_realm: String,
-
-    // --- Ağ Adresleri (Dış ve Hedefler) ---
     pub media_service_public_ip: String,
     pub media_service_url: String,
     pub dialplan_service_url: String,
     pub user_service_url: String,
-
-    // --- Altyapı Bağlantıları ---
     pub rabbitmq_url: String,
     pub redis_url: String,
 }
 
 impl fmt::Debug for AppConfig {
+
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppConfig")
             .field("env", &self.env)
@@ -45,7 +38,6 @@ impl fmt::Debug for AppConfig {
 }
 
 impl AppConfig {
-    // DÜZELTME: Fonksiyon imzası artık Box<dyn Error> yerine anyhow::Result kullanıyor.
     pub fn load_from_env() -> Result<Self> { 
         dotenvy::dotenv().ok();
         

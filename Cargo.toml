@@ -1,3 +1,5 @@
+# Cargo.toml
+
 [package]
 name = "sentiric-sip-signaling-service"
 version = "0.1.1"
@@ -6,6 +8,7 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1", features = ["full", "sync"] }
 tonic = { version = "0.11", features = ["tls", "tls-roots"] }
+prost = "0.12"
 lapin = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -15,24 +18,23 @@ tracing = "0.1"
 rand = "0.8"
 tokio-util = "0.7"
 regex = "1"
-# --- DEĞİŞİKLİK BURADA ---
-dotenvy = "0.15" # dotenv -> dotenvy
-# --- DEĞİŞİKLİK SONA ERDİ ---
+dotenvy = "0.15"
 once_cell = "1.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-prost = "0.12"
 rand_distr = "0.4.3"
 futures-util = "0.3"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
-thiserror = "1.0"
 redis = { version = "0.32", features = ["tokio-rustls-comp"] }
+
+# --- KRİTİK BAĞIMLILIKLAR ---
+anyhow = "1.0"      # .context() metodu için
+thiserror = "1.0"   # Özel hata tipleri için
 
 # --- TLS BAĞIMLILIKLARI ---
 rustls = "0.23"
 rustls-pemfile = "2.1"
 ring = "0.17"
-# --- BİTTİ ---
 
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"

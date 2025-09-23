@@ -1,4 +1,5 @@
 // sentiric-sip-signaling-service/src/main.rs
+use anyhow::Result; // DÜZELTME: Doğrudan anyhow::Result kullanıyoruz.
 use std::env;
 use std::process;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ use state::cleanup_old_transactions;
 type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
 #[tokio::main]
-async fn main() -> Result<(), ServiceError> {
+async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
     let provider = default_provider();
     CryptoProvider::install_default(provider)
         .expect("Crypto provider (ring) kurulamadı.");
@@ -76,7 +77,7 @@ async fn main() -> Result<(), ServiceError> {
     );
 
     let shared_state: SharedAppState = Arc::new(Mutex::new(None));
-    // DÜZELTME: Derleyiciye yardımcı olmak için tipini açıkça belirtiyoruz.
+
     let sock: Arc<UdpSocket> = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
     info!(address = %config.sip_listen_addr, "✅ UDP SIP dinleyici hemen başlatıldı.");
     
