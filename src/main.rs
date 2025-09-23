@@ -1,23 +1,14 @@
 // sentiric-sip-signaling-service/src/main.rs
-use anyhow::Result; // DÜZELTME: Doğrudan anyhow::Result kullanıyoruz.
-use std::env;
-use std::process;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::UdpSocket;
-use tokio::select;
-use tokio::signal;
-use tokio::sync::Mutex;
+use anyhow::Result;
+use rustls::crypto::{ring::default_provider, CryptoProvider};
+use sentiric_contracts::sentiric::sip::v1::sip_signaling_service_server::SipSignalingServiceServer;
+use sip::{handler::handle_sip_request, responses::create_response, utils::parse_complex_headers};
+use state::cleanup_old_transactions;
+use std::{env, process, sync::Arc, time::Duration};
+use tokio::{net::UdpSocket, select, signal, sync::Mutex};
 use tonic::transport::{Certificate, Identity, Server as GrpcServer, ServerTlsConfig};
 use tracing::{error, info, warn};
-use tracing_subscriber::{
-    fmt::{self, format::FmtSpan},
-    prelude::*,
-    Registry, EnvFilter,
-};
-
-use rustls::crypto::CryptoProvider;
-use rustls::crypto::ring::default_provider;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter, Registry};
 
 mod app_state;
 mod config;
@@ -32,18 +23,12 @@ use app_state::AppState;
 use config::AppConfig;
 use error::ServiceError;
 use grpc::service::MySipSignalingService;
-use sentiric_contracts::sentiric::sip::v1::sip_signaling_service_server::SipSignalingServiceServer;
-use sip::responses::create_response;
-use sip::utils::parse_complex_headers;
-use state::cleanup_old_transactions;
 
 type SharedAppState = Arc<Mutex<Option<Arc<AppState>>>>;
 
 #[tokio::main]
-async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
-    let provider = default_provider();
-    CryptoProvider::install_default(provider)
-        .expect("Crypto provider (ring) kurulamadı.");
+async fn main() -> Result<()> {
+    CryptoProvider::install_default(default_provider()).expect("Crypto provider (ring) kurulamadı.");
 
     let config = match AppConfig::load_from_env() {
         Ok(cfg) => Arc::new(cfg),
@@ -53,19 +38,19 @@ async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
         }
     };
 
+    // --- STANDARTLAŞTIRILMIŞ LOGLAMA KURULUMU ---
     let rust_log_env = env::var("RUST_LOG")
-        .unwrap_or_else(|_| env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()));
+        .unwrap_or_else(|_| "info,h2=warn,hyper=warn,tower=warn,rustls=warn,lapin=warn".to_string());
     
-    let env_filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new(&rust_log_env))?;
-    
+    let env_filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(&rust_log_env))?;
     let subscriber = Registry::default().with(env_filter);
     
     if config.env == "development" {
-        subscriber.with(fmt::layer().with_target(true).with_line_number(true).with_span_events(FmtSpan::NONE)).init();
+        subscriber.with(fmt::layer().with_target(true).with_line_number(true)).init();
     } else {
-        subscriber.with(fmt::layer().json().with_current_span(true).with_span_list(true).with_span_events(FmtSpan::NONE)).init();
+        subscriber.with(fmt::layer().json().with_current_span(true).with_span_list(true)).init();
     }
+    // --- LOGLAMA KURULUMU SONU ---
 
     info!(
         service_name = "sentiric-sip-signaling-service",
@@ -77,21 +62,18 @@ async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
     );
 
     let shared_state: SharedAppState = Arc::new(Mutex::new(None));
-
     let sock: Arc<UdpSocket> = Arc::new(UdpSocket::bind(config.sip_listen_addr).await?);
     info!(address = %config.sip_listen_addr, "✅ UDP SIP dinleyici hemen başlatıldı.");
     
     let state_clone_for_init = shared_state.clone();
     let config_clone_for_init = config.clone();
 
-    // gRPC sunucusunu ayrı bir görevde başlat
     let grpc_server_task = {
         let state_clone = shared_state.clone();
         let sock_clone = sock.clone();
         let config_clone = config.clone();
         tokio::spawn(async move {
             loop {
-                // Sadece AppState hazır olduğunda gRPC sunucusunu başlat
                 if let Some(state) = state_clone.lock().await.as_ref() {
                     let grpc_service = MySipSignalingService {
                         app_state: state.clone(),
@@ -122,23 +104,20 @@ async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
                     {
                         error!(error = %e, "gRPC sunucusu çöktü.");
                     }
-                    break; // Sunucu çökerse döngüden çık
+                    break;
                 }
-                // AppState hazır değilse, kısa bir süre bekle ve tekrar kontrol et
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         })
     };
 
-    // Bağımlılıkları kurmak için ayrı bir görev başlat
     tokio::spawn(async move {
         info!("Arka planda uygulama durumu (bağımlılıklar) başlatılıyor...");
         match AppState::new_critical(config_clone_for_init).await {
             Ok(mut state) => {
                 state.connect_rabbitmq().await;
                 let final_state = Arc::new(state);
-
-                // Zaman aşımına uğramış çağrıları temizlemek için arka plan görevini başlat                
+                
                 tokio::spawn(cleanup_old_transactions(final_state.active_calls.clone()));
                 
                 *state_clone_for_init.lock().await = Some(final_state);
@@ -150,25 +129,24 @@ async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
             }
         }
     });
-        
-        // Ana UDP dinleme döngüsü
-        let main_loop = async {
+    
+    let main_loop = async {
         let mut buf = [0; 65535];
         loop {
             let (len, addr) = sock.recv_from(&mut buf).await?;
             let request_bytes = buf[..len].to_vec();
             
+            info!(from = %addr, bytes_received = len, "UDP paketi alındı, işleyiciye yönlendiriliyor.");
+            
             let locked_state = shared_state.lock().await;
             if let Some(state) = locked_state.as_ref() {
-                // Durum hazır, isteği işlemesi için yeni bir task başlat
-                tokio::spawn(sip::handler::handle_sip_request(
+                tokio::spawn(handle_sip_request(
                     request_bytes,
                     Arc::clone(&sock),
                     addr,
                     state.clone(),
                 ));
             } else {
-                // Durum henüz hazır değil, 503 yanıtı ver
                 warn!(from = %addr, "Servis henüz başlatılıyor, isteğe 503 Service Unavailable yanıtı veriliyor.");
                 let request_str = String::from_utf8_lossy(&request_bytes);
                 if request_str.starts_with("INVITE") {
@@ -183,21 +161,10 @@ async fn main() -> Result<()> { // DÜZELTME: Dönüş tipi anyhow::Result oldu
         Ok::<(), std::io::Error>(())
     };
 
-    // Graceful shutdown mekanizması
     select! {
-        res = main_loop => {
-            if let Err(e) = res {
-                error!(error = %ServiceError::from(e), "Kritik UDP ağ hatası, servis durduruluyor.");
-            }
-        },
-        res = grpc_server_task => {
-             if let Err(e) = res {
-                error!(error = %e, "gRPC sunucu görevi hatayla sonlandı.");
-             }
-        },
-        _ = signal::ctrl_c() => {
-            warn!("Kapatma sinyali (Ctrl+C) alındı. Servis gracefully kapatılıyor...");
-        }
+        res = main_loop => { if let Err(e) = res { error!(error = %ServiceError::from(e), "Kritik UDP ağ hatası, servis durduruluyor."); } },
+        res = grpc_server_task => { if let Err(e) = res { error!(error = %e, "gRPC sunucu görevi hatayla sonlandı."); } },
+        _ = signal::ctrl_c() => { warn!("Kapatma sinyali (Ctrl+C) alındı. Servis gracefully kapatılıyor..."); }
     }
     
     info!("✅ Servis başarıyla kapatıldı.");

@@ -1,12 +1,11 @@
 // sentiric-sip-signaling-service/src/config.rs
-use anyhow::{Context, Result}; 
+use anyhow::{Context, Result}; // KRİTİK DÜZELTME: Bu satır, .context() metodunu kullanılabilir hale getirir.
 use std::env;
 use std::fmt;
 use std::net::SocketAddr;
 
 #[derive(Clone)]
 pub struct AppConfig {
-    // ... (struct içeriği aynı kalıyor) ...
     pub env: String,
     pub service_version: String,
     pub cert_path: String,
@@ -23,7 +22,6 @@ pub struct AppConfig {
 }
 
 impl fmt::Debug for AppConfig {
-
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppConfig")
             .field("env", &self.env)
@@ -38,9 +36,9 @@ impl fmt::Debug for AppConfig {
 }
 
 impl AppConfig {
-    pub fn load_from_env() -> Result<Self> { 
+    pub fn load_from_env() -> Result<Self> {
         dotenvy::dotenv().ok();
-        
+
         let service_version = env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
         let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT").unwrap_or_else(|_| "13024".to_string());
         let sip_port = sip_port_str.parse::<u16>()?;

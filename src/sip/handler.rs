@@ -1,4 +1,4 @@
-// ========== DOSYA: sentiric-sip-signaling-service/src/sip/handler.rs (TAM VE GÜNCEL İÇERİK) ==========
+// sentiric-sip-signaling-service/src/sip/handler.rs
 use super::{ack, bye, invite, register};
 use crate::app_state::AppState;
 use std::net::SocketAddr;
@@ -21,10 +21,10 @@ pub async fn handle_sip_request(
         }
     };
 
+    // DÜZELTME: Bu kritik log artık DEBUG seviyesinde.
     debug!(
-        request_from = %addr,
-        request_body = %request_str.replace("\r\n", "\\r\n"),
-        "Gelen ham SIP isteği."
+        request_body = %request_str.replace("\r\n", "\\r\\n"),
+        "SIP isteği işleyici tarafından alındı (ham içerik)."
     );
 
     let result = if request_str.starts_with("REGISTER") {

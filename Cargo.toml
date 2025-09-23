@@ -1,5 +1,4 @@
 # Cargo.toml
-
 [package]
 name = "sentiric-sip-signaling-service"
 version = "0.1.1"
@@ -27,9 +26,9 @@ lazy_static = "1.4.0"
 md5 = "0.8.0"
 redis = { version = "0.32", features = ["tokio-rustls-comp"] }
 
-# --- KRİTİK BAĞIMLILIKLAR ---
-anyhow = "1.0"      # .context() metodu için
-thiserror = "1.0"   # Özel hata tipleri için
+# --- HATA YÖNETİMİ İÇİN KRİTİK BAĞIMLILIKLAR ---
+anyhow = "1.0"
+thiserror = "1.0"
 
 # --- TLS BAĞIMLILIKLARI ---
 rustls = "0.23"
