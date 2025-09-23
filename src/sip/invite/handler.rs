@@ -31,23 +31,22 @@ pub async fn handle(
         return Ok(());
     }
 
-    // DÜZELTME: Gereksiz `addr` argümanı kaldırıldı.
     sock.send_to(responses::create_response("100 Trying", &context, None, &state.config).as_bytes(), addr).await?;
 
     match orchestrator::setup_and_finalize_call(&context, state.clone()).await {
         Ok(call_info) => {
-            // DÜZELTME: `call_info` içindeki `remote_addr` kullanılacak.
-            let ringing_response = responses::build_180_ringing(&call_info.headers, &state.config, call_info.remote_addr);
+            let mut ringing_context = context.clone();
+            ringing_context.headers = call_info.headers.clone(); // to_tag'li header'ları al
+            let ringing_response = responses::build_180_ringing(&ringing_context, &state.config);
             sock.send_to(ringing_response.as_bytes(), call_info.remote_addr).await?;
             
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             
-            let ok_response = responses::build_200_ok_with_sdp(&call_info.headers, call_info.rtp_port, &state.config, call_info.remote_addr);
+            let ok_response = responses::build_200_ok_with_sdp(&ringing_context, call_info.rtp_port, &state.config);
             sock.send_to(ok_response.as_bytes(), call_info.remote_addr).await?;
         }
         Err(e) => {
             error!(error = %e, "Çağrı kurulumu orkestrasyonu başarısız oldu.");
-            // DÜZELTME: Gereksiz `addr` argümanı kaldırıldı.
             let error_response = responses::create_response("503 Service Unavailable", &context, None, &state.config);
             sock.send_to(error_response.as_bytes(), addr).await?;
         }
@@ -61,16 +60,12 @@ async fn check_and_handle_duplicate(call_id: &str, redis_client: &Arc<crate::red
     let mut conn = redis_client.get_multiplexed_async_connection().await?;
     let invite_lock_key = format!("processed_invites:{}", call_id);
     
-    // set_nx (set if not exists) atomik bir operasyondur.
-    // Eğer anahtar yoksa `true` döner ve anahtarı oluşturur.
-    // Eğer anahtar varsa `false` döner.
     let is_first_invite: bool = conn.set_nx(&invite_lock_key, true).await?;
     if !is_first_invite {
         warn!("Yinelenen INVITE isteği alındı (Redis atomik kilit), görmezden geliniyor.");
-        return Ok(true); // Yinelenen, işlem yapma
+        return Ok(true);
     }
     
-    // Anahtarın Redis'te sonsuza kadar kalmaması için bir son kullanma süresi ayarla.
     conn.expire::<_, ()>(&invite_lock_key, 30).await?;
-    Ok(false) // Yinelenen değil, işleme devam et
+    Ok(false)
 }
