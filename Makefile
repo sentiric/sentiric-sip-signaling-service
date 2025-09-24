@@ -57,6 +57,14 @@ WHITE := \033[0;37m
 BOLD := \033[1m
 RESET := \033[0m
 
+# --- YENİ BÖLÜM: Dinamik Build Argümanları ---
+# Bu değişkenler, `make` komutu çalıştığı anda hesaplanır.
+GIT_COMMIT := $(shell git rev-parse --short HEAD)
+BUILD_DATE := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
+# SERVICE_VERSION için her repo kendi Cargo.toml/go.mod dosyasından okuyabilir,
+# ama basitlik için şimdilik bunu Dockerfile'a bırakabiliriz.
+BUILD_ARGS = --build-arg GIT_COMMIT=$(GIT_COMMIT) --build-arg BUILD_DATE=$(BUILD_DATE)
+
 # --- Güvenlik Kontrolleri ---
 _PROFILE_CHECK:
 	@if [ "$(PROFILE)" != "dev" ] && \
@@ -88,14 +96,15 @@ start: _profile_check _sync_config _generate_env _validate_service ## ▶️ Pla
 	@echo "$(PROFILE)" > .profile.state
 	@if [ "$(PROFILE)" = "dev" ]; then \
 		echo -e "$(YELLOW)🚀 Kaynak koddan inşa edilerek geliştirme ortamı başlatılıyor...$(RESET)"; \
-		$(DOCKER_BUILD_FLAGS) $(COMPOSE_CMD) up -d --build --remove-orphans $(SERVICE); \
+		$(DOCKER_BUILD_FLAGS) $(COMPOSE_CMD) build $(BUILD_ARGS) $(LOG_LEVEL) $(SERVICE); \
+		$(COMPOSE_CMD) up -d --remove-orphans $(SERVICE); \
 	else \
 		echo -e "$(YELLOW)🚀 Hazır imajlar çekiliyor ve '$(PROFILE)' profili dağıtılıyor...$(RESET)"; \
 		$(COMPOSE_CMD) pull $(SERVICE); \
 		$(COMPOSE_CMD) up -d --remove-orphans $(SERVICE); \
 	fi
-# 	Servislerde setup bucket yapma
-# 	$(MAKE) _setup_bucket # Servisler başladıktan SONRA _setup_bucket'ı çağır
+
+	$(MAKE) _setup_bucket
 	@echo -e "$(GREEN)✅ Platform başlatıldı. Durum kontrolü için: make status$(RESET)"
 
 stop: _profile_check _generate_env _validate_service ## ⏹️ Platformu durdurur (verileri korur)
@@ -121,7 +130,7 @@ restart: _profile_check _generate_env _validate_service ## 🔄 Servisleri yenid
 build: _profile_check _generate_env _validate_service ## 🏗️ Belirtilen servisi (veya tümünü) yeniden inşa eder (sadece dev profilleri)
 	@echo -e "$(YELLOW)🏗️  Servis(ler) yeniden inşa ediliyor... Profil: $(PROFILE)$(RESET)"
 	@if [ "$(PROFILE)" = "dev" ]; then \
-		$(DOCKER_BUILD_FLAGS) $(COMPOSE_CMD) build $(LOG_LEVEL) $(SERVICE); \
+		$(DOCKER_BUILD_FLAGS) $(COMPOSE_CMD) build $(BUILD_ARGS) $(LOG_LEVEL) $(SERVICE); \
 		echo -e "$(GREEN)✅ Build tamamlandı$(RESET)"; \
 	else \
 		echo -e "$(RED)❌ Uyarı: 'build' komutu sadece 'dev' profillerinde çalışır. Üretim profilleri için 'pull' kullanın.$(RESET)"; \
@@ -233,7 +242,7 @@ _sync_config:
 _setup_bucket:
 	@if [ ! -f "$(ENV_FILE)" ]; then \
 		echo -e "$(YELLOW)⚠️ .env dosyası bulunamadı, _setup_bucket adımı atlanıyor.$(RESET)"; \
-	elif grep -q 'S3_PROVIDER="minio"' "$(ENV_FILE)"; then \
+	elif grep -q 'BUCKET_PROVIDER=minio' "$(ENV_FILE)"; then \
 		echo -e "$(BLUE)📦 S3 (MinIO) bucket'ları kontrol ediliyor/oluşturuluyor...$(RESET)"; \
 		echo -e "$(YELLOW)⏳ MinIO servisinin sağlıklı olması bekleniyor...$(RESET)"; \
 		timeout=60; \
@@ -248,7 +257,7 @@ _setup_bucket:
 		done; \
 		echo -e "$(GREEN)✅ MinIO servisi sağlıklı.$(RESET)"; \
 		\
-		S3_BUCKET_NAME=$$(grep 'S3_BUCKET_NAME=' $(ENV_FILE) | head -n 1 | cut -d'=' -f2 | tr -d '"\r'); \
+		BUCKET_NAME=$$(grep 'BUCKET_NAME=' $(ENV_FILE) | head -n 1 | cut -d'=' -f2 | tr -d '"\r'); \
 		MINIO_ROOT_USER=$$(grep 'MINIO_ROOT_USER=' $(ENV_FILE) | head -n 1 | cut -d'=' -f2 | tr -d '"\r'); \
 		MINIO_ROOT_PASSWORD=$$(grep 'MINIO_ROOT_PASSWORD=' $(ENV_FILE) | head -n 1 | cut -d'=' -f2 | tr -d '"\r'); \
 		\
@@ -258,13 +267,13 @@ _setup_bucket:
 			-e MINIO_ROOT_PASSWORD="$$MINIO_ROOT_PASSWORD" \
 			minio sh -c 'mc alias set local http://localhost:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"' || true; \
 		\
-		echo "   -> Bucket oluşturuluyor: $$S3_BUCKET_NAME..."; \
-		$(COMPOSE_CMD) exec -T -e BUCKET="$$S3_BUCKET_NAME" minio sh -c 'mc mb "local/$$BUCKET" --ignore-existing' || true; \
-		$(COMPOSE_CMD) exec -T -e BUCKET="$$S3_BUCKET_NAME" minio sh -c 'mc anonymous set public "local/$$BUCKET"' || true; \
+		echo "   -> Bucket oluşturuluyor: $$BUCKET_NAME..."; \
+		$(COMPOSE_CMD) exec -T -e BUCKET="$$BUCKET_NAME" minio sh -c 'mc mb "local/$$BUCKET" --ignore-existing' || true; \
+		$(COMPOSE_CMD) exec -T -e BUCKET="$$BUCKET_NAME" minio sh -c 'mc anonymous set public "local/$$BUCKET"' || true; \
 		\
 		echo -e "$(GREEN)✅ Bucket kurulum adımları tamamlandı.$(RESET)"; \
 	else \
-		echo -e "$(CYAN)ℹ️  S3 provider 'minio' değil. Bucket oluşturma adımı atlanıyor.$(RESET)"; \
+		echo -e "$(CYAN)ℹ️ S3 provider 'minio' değil. Bucket oluşturma adımı atlanıyor.$(RESET)"; \
 	fi
 
 

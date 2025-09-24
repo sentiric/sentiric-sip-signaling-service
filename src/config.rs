@@ -1,18 +1,81 @@
 // sentiric-sip-signaling-service/src/config.rs
-use anyhow::{Context, Result}; // KRİTİK DÜZELTME: Bu satır, .context() metodunu kullanılabilir hale getirir.
-use std::env;
-use std::fmt;
-use std::net::SocketAddr;
+use anyhow::Result;
+use serde::Deserialize;
+use std::{env, fmt, net::SocketAddr, sync::Arc};
 
-#[derive(Clone)]
+// ===================================================================
+//  Bölüm 1: Platform Seviyesi Yapılandırma
+// ===================================================================
+
+/// Tüm Sentiric platformu tarafından kullanılan ortam değişkenlerini
+/// tip-güvenli bir şekilde temsil eder. "Tek Doğruluk Kaynağı" budur.
+/// Bu struct, doğrudan ortamdan `serde` ile doldurulur.
+#[derive(Deserialize, Debug, Clone)]
+pub struct PlatformConfig {
+    // --- TEMEL AYARLAR ---
+    #[serde(default = "default_env")]
+    pub env: String,
+    #[serde(default = "default_rust_log")]
+    pub rust_log: String,
+    #[serde(default = "default_version")]
+    pub service_version: String,
+
+    // --- GENEL SERTİFİKA YOLLARI ---
+    pub grpc_tls_ca_path: String,
+
+    // --- BAĞIMLILIK URL'LERİ ---
+    pub redis_url: String,
+    pub rabbitmq_url: String,
+    
+    // --- BAĞIMLI SERVİS HEDEFLERİ ---
+    pub media_service_public_ip: String,
+    pub media_service_target_grpc_url: String,
+    pub user_service_target_grpc_url: String,
+    pub dialplan_service_target_grpc_url: String,
+
+    // --- BU SERVİSE ÖZEL AYARLAR ---
+    pub sip_signaling_udp_port: u16,
+    pub sip_signaling_realm: String,
+    pub sip_signaling_cert_path: String,
+    pub sip_signaling_key_path: String,
+}
+
+impl PlatformConfig {
+    /// Ortam değişkenlerinden tüm platform yapılandırmasını yükler.
+    pub fn from_env() -> Result<Self> {
+        dotenvy::dotenv().ok();
+        let cfg = config::Config::builder()
+            .add_source(config::Environment::default().separator("__"))
+            .build()?;
+        Ok(cfg.try_deserialize()?)
+    }
+}
+
+// Serde için varsayılan değer fonksiyonları
+fn default_env() -> String { "development".to_string() }
+fn default_rust_log() -> String { "info,h2=warn,hyper=warn".to_string() }
+fn default_version() -> String { env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string()) }
+
+
+// ===================================================================
+//  Bölüm 2: Servise Özel Yapılandırma
+// ===================================================================
+
+/// `sip-signaling-service`'in çalışması için ihtiyaç duyduğu,
+/// `PlatformConfig`'ten türetilmiş, kullanıma hazır yapılandırma.
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub env: String,
     pub service_version: String,
+    pub rust_log: String,
+    
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
+    
     pub sip_listen_addr: SocketAddr,
     pub sip_realm: String,
+    
     pub media_service_public_ip: String,
     pub media_service_url: String,
     pub dialplan_service_url: String,
@@ -21,57 +84,26 @@ pub struct AppConfig {
     pub redis_url: String,
 }
 
-impl fmt::Debug for AppConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AppConfig")
-            .field("env", &self.env)
-            .field("service_version", &self.service_version)
-            .field("sip_listen_addr", &self.sip_listen_addr)
-            .field("media_service_public_ip", &self.media_service_public_ip)
-            .field("user_service_url", &self.user_service_url)
-            .field("dialplan_service_url", &self.dialplan_service_url)
-            .field("media_service_url", &self.media_service_url)
-            .finish_non_exhaustive()
-    }
-}
-
-impl AppConfig {
-    pub fn load_from_env() -> Result<Self> {
-        dotenvy::dotenv().ok();
-
-        let service_version = env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string());
-        let sip_port_str = env::var("SIP_SIGNALING_UDP_PORT").unwrap_or_else(|_| "13024".to_string());
-        let sip_port = sip_port_str.parse::<u16>()?;
-
-        let redis_use_ssl_str = env::var("REDIS_USE_SSL").unwrap_or_else(|_| "false".to_string());
-        let redis_use_ssl = redis_use_ssl_str.parse::<bool>().unwrap_or(false);
-        let redis_url_from_env = env::var("REDIS_URL")?;
-        
-        let redis_url = if redis_use_ssl && redis_url_from_env.starts_with("redis://") {
-            redis_url_from_env.replacen("redis://", "rediss://", 1)
-        } else {
-            redis_url_from_env
-        };
-
-        Ok(AppConfig {
-            env: env::var("ENV").unwrap_or_else(|_| "production".to_string()),
-            service_version,
-            
-            cert_path: env::var("SIP_SIGNALING_CERT_PATH").context("ZORUNLU: SIP_SIGNALING_CERT_PATH eksik")?,
-            key_path: env::var("SIP_SIGNALING_KEY_PATH").context("ZORUNLU: SIP_SIGNALING_KEY_PATH eksik")?,
-            ca_path: env::var("GRPC_TLS_CA_PATH").context("ZORUNLU: GRPC_TLS_CA_PATH eksik")?,
-            
-            sip_listen_addr: format!("0.0.0.0:{}", sip_port).parse()?,
-            sip_realm: env::var("SIP_SIGNALING_REALM").unwrap_or_else(|_| "sentiric_demo".to_string()),
-            
-            media_service_public_ip: env::var("MEDIA_SERVICE_PUBLIC_IP").context("ZORUNLU: MEDIA_SERVICE_PUBLIC_IP eksik")?,
-            
-            media_service_url: env::var("MEDIA_SERVICE_TARGET_GRPC_URL").context("ZORUNLU: MEDIA_SERVICE_TARGET_GRPC_URL eksik")?,
-            dialplan_service_url: env::var("DIALPLAN_SERVICE_TARGET_GRPC_URL").context("ZORUNLU: DIALPLAN_SERVICE_TARGET_GRPC_URL eksik")?,
-            user_service_url: env::var("USER_SERVICE_TARGET_GRPC_URL").context("ZORUNLU: USER_SERVICE_TARGET_GRPC_URL eksik")?,
-            
-            rabbitmq_url: env::var("RABBITMQ_URL")?,
-            redis_url,
-        })
+/// `PlatformConfig`'ten bu servise özel `AppConfig`'i oluşturan dönüşüm.
+impl From<Arc<PlatformConfig>> for AppConfig {
+    fn from(pc: Arc<PlatformConfig>) -> Self {
+        Self {
+            env: pc.env.clone(),
+            service_version: pc.service_version.clone(),
+            rust_log: pc.rust_log.clone(),
+            cert_path: pc.sip_signaling_cert_path.clone(),
+            key_path: pc.sip_signaling_key_path.clone(),
+            ca_path: pc.grpc_tls_ca_path.clone(),
+            sip_listen_addr: format!("0.0.0.0:{}", pc.sip_signaling_udp_port)
+                .parse()
+                .expect("Geçersiz SIP dinleme adresi"),
+            sip_realm: pc.sip_signaling_realm.clone(),
+            media_service_public_ip: pc.media_service_public_ip.clone(),
+            media_service_url: pc.media_service_target_grpc_url.clone(),
+            dialplan_service_url: pc.dialplan_service_target_grpc_url.clone(),
+            user_service_url: pc.user_service_target_grpc_url.clone(),
+            rabbitmq_url: pc.rabbitmq_url.clone(),
+            redis_url: pc.redis_url.clone(),
+        }
     }
 }

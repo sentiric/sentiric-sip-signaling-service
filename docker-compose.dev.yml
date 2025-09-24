@@ -1,5 +1,6 @@
 # docker-compose.dev.yml
-# Service Geliştirme ortamı
+# SENTIRIC-SIP-SIGNALING-SERVICE ÖZEL GELİŞTİRME ORTAMI
+# Bu dosya, sadece bu servisi ve onun KRİTİK bağımlılıklarını ayağa kaldırır.
 
 networks:
   sentiric-net:
@@ -11,14 +12,16 @@ networks:
           gateway: ${NETWORK_GATEWAY}
 
 volumes:
-  # [infra]: Temel Altyapı (Infrastructure Layer)
-  # --------------------------------------------------
+  postgres_data:
   rabbitmq_data:
   redis_data:
+  qdrant_data:
+  minio_data:
 
 services:
-  # [capability-telephony]: Yetenek Servisleri (Capability Layer)
-  # --------------------------------------------------
+  # ==================================================
+  # 1. Test Edilen Ana Servis
+  # ==================================================
   sip-signaling:
     build: { context: ../sentiric-sip-signaling-service }
     env_file: ["${ENV_FILE_PATH}"]
@@ -37,8 +40,165 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s    
-    # depends_on: 
-    #   rabbitmq: { condition: service_healthy }
-    #   media-service: { condition: service_healthy }
-    #   redis: { condition: service_healthy }
+      start_period: 20s   
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      user-service: { condition: service_healthy }
+      dialplan-service: { condition: service_healthy }
+      media-service: { condition: service_healthy }
+
+  # ==================================================
+  # 2. KRİTİK gRPC BAĞIMLILIKLARI
+  # ==================================================
+  user-service:
+    image: ghcr.io/sentiric/sentiric-user-service:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: 
+      - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+    ports: 
+      - "12010:${USER_SERVICE_HTTP_PORT:-12010}"
+      - "12011:${USER_SERVICE_GRPC_PORT:-12011}"
+      - "12012:${USER_SERVICE_METRICS_PORT:-12012}"          
+    networks:
+      sentiric-net:
+        ipv4_address: ${USER_SERVICE_IPV4_ADDRESS}       
+    restart: always
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "12011"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s    
+    depends_on: 
+      postgres: { condition: service_healthy }
+
+  dialplan-service:
+    image: ghcr.io/sentiric/sentiric-dialplan-service:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: 
+      - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+    ports: 
+      - "12020:${DIALPLAN_SERVICE_HTTP_PORT:-12020}"
+      - "12021:${DIALPLAN_SERVICE_GRPC_PORT:-12021}"
+      - "12022:${DIALPLAN_SERVICE_METRICS_PORT:-12022}"          
+    networks:
+      sentiric-net:
+        ipv4_address: ${DIALPLAN_SERVICE_IPV4_ADDRESS}       
+    restart: always
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "12021"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s    
+    depends_on: 
+      postgres: { condition: service_healthy }
+      user-service: { condition: service_healthy }
+
+  media-service:
+    image: ghcr.io/sentiric/sentiric-media-service:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: 
+      - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+    ports: 
+      - "13030:${MEDIA_SERVICE_HTTP_PORT:-13030}"
+      - "13031:${MEDIA_SERVICE_GRPC_PORT:-13031}"
+      - "13032:${MEDIA_SERVICE_METRICS_PORT:-13032}"   
+      - "${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}:${RTP_SERVICE_PORT_MIN:-10000}-${RTP_SERVICE_PORT_MAX:-10100}/udp"
+    networks:
+      sentiric-net:
+        ipv4_address: ${MEDIA_SERVICE_IPV4_ADDRESS}    
+    restart: always
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "13031"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s    
+    depends_on:
+      minio: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+  # ==================================================
+  # 3. ALTYAPI BAĞIMLILIKLARI
+  # ==================================================
+  # --- YENİ EKLENEN POSTGRES SERVISI ---
+  postgres:
+    image: ghcr.io/sentiric/sentiric-postgres:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ${CONFIG_REPO_PATH}/postgres-init:/docker-entrypoint-initdb.d    
+    ports: 
+      - "5432:${POSTGRES_DB_PORT:-5432}"
+    networks:
+      sentiric-net:
+        ipv4_address: ${POSTGRES_IPV4_ADDRESS}
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: ghcr.io/sentiric/sentiric-rabbitmq:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: 
+      - rabbitmq_data:/var/lib/rabbitmq/    
+    ports: 
+      - "5672:${RABBITMQ_PORT:-5672}"
+      - "15672:${RABBITMQ_UI_PORT:-15672}"
+    networks:
+      sentiric-net:
+        ipv4_address: ${RABBITMQ_IPV4_ADDRESS}
+    restart: always
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3 
+
+  redis:
+    image: ghcr.io/sentiric/sentiric-redis:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]    
+    volumes: 
+      - redis_data:/data
+    ports: 
+      - "6379:${REDIS_PORT:-6379}"    
+    networks:
+      sentiric-net:
+        ipv4_address: ${REDIS_IPV4_ADDRESS}
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: ghcr.io/sentiric/sentiric-minio:${TAG:-latest}
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes:
+      - minio_data:/data   
+    ports: 
+      - "9000:${MINIO_API_PORT:-9000}"
+      - "9001:${MINIO_CONSOLE_PORT:-9001}"      
+    networks:
+      sentiric-net:
+        ipv4_address: ${MINIO_IPV4_ADDRESS}          
+    command: server /data --console-address ":9001"
+    restart: always  
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 30s
+      timeout: 20s
+      retries: 3       

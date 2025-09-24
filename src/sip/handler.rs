@@ -1,10 +1,10 @@
-// sentiric-sip-signaling-service/src/sip/handler.rs
+// src/sip/handler.rs
 use super::{ack, bye, invite, register};
 use crate::app_state::AppState;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{error, info, instrument, warn}; // 'debug' yerine 'warn' ekledik
+use tracing::{debug, error, info, instrument};
 
 #[instrument(skip_all, fields(remote_addr = %addr, call_id, trace_id))]
 pub async fn handle_sip_request(
@@ -21,8 +21,7 @@ pub async fn handle_sip_request(
         }
     };
 
-    // --- DEĞİŞİKLİK 1: Bu logu INFO seviyesine çıkarıyoruz ---
-    info!(
+    debug!(
         request_body = %request_str.replace("\r\n", "\\r\\n"),
         "SIP isteği işleyici tarafından alındı (ham içerik)."
     );
@@ -40,8 +39,7 @@ pub async fn handle_sip_request(
         info!("ACK isteği işleniyor...");
         ack::handle(request_str, sock, addr, state).await
     } else {
-        // --- DEĞİŞİKLİK 2: Bu logu WARN seviyesine çıkarıyoruz ---
-        warn!(
+        debug!(
             method = &request_str[..request_str.find(' ').unwrap_or(10)],
             "Desteklenmeyen veya ilgisiz SIP metodu, görmezden geliniyor."
         );
