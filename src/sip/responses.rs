@@ -1,3 +1,4 @@
+// src/sip/responses.rs
 use crate::config::AppConfig;
 use crate::sip::call_context::CallContext;
 use rand::Rng;
@@ -21,10 +22,13 @@ pub fn build_200_ok_with_sdp(
     config: &AppConfig,
     remote_addr: SocketAddr,
 ) -> String {
+    // SDP'yi oluştururken artık config.sip_public_ip yerine config.media_service_public_ip kullanabiliriz.
+    // Çünkü create_response_from_parts bunu düzeltecek.
+    // YA DA DAHA TEMİZİ:
     let sdp_body = format!(
         "v=0\r\no=- {0} {0} IN IP4 {1}\r\ns=Sentiric\r\nc=IN IP4 {1}\r\nt=0 0\r\nm=audio {2} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n",
         rand::thread_rng().gen::<u32>(),
-        &config.media_service_public_ip,
+        &config.sip_public_ip, // Doğrudan doğru IP'yi kullanalım
         rtp_port
     );
     create_response_from_parts("200 OK", headers, via_headers, Some(&sdp_body), config, remote_addr)
@@ -60,9 +64,25 @@ pub fn create_response_from_parts(
     }
     let via_lines = via_lines_vec.join("\r\n");
 
-    let contact_header = format!("<sip:{}@{}>", "sentiric-signal", config.sip_listen_addr);
+    // --- KRİTİK DEĞİŞİKLİK BURADA ---
+    // Contact başlığını artık dinamik olarak genel IP ile oluşturuyoruz.
+    let contact_header = format!("<sip:{}@{}:{}>", "sentiric-signal", config.sip_public_ip, config.sip_listen_addr.port());
+    // --- DEĞİŞİKLİK SONU ---
+
     let www_authenticate_line = headers.get("www-authenticate").map(|val| format!("WWW-Authenticate: {}\r\n", val)).unwrap_or_default();
     let server_header = format!("Server: Sentiric Signaling Service v{}", config.service_version);
+
+    // SDP'yi de burada oluşturarak public IP'yi kullanalım
+    let final_sdp_body;
+    let body = match sdp_body {
+        Some(sdp) => {
+            // Eğer bir SDP geldiyse (örn: 200 OK için), içindeki IP'yi bizim public IP'mizle değiştirelim.
+            // Bu, build_200_ok_with_sdp fonksiyonunu basitleştirir.
+            final_sdp_body = sdp.replace(&config.media_service_public_ip, &config.sip_public_ip);
+            &final_sdp_body
+        },
+        None => ""
+    };
 
     let response_string = format!(
         "SIP/2.0 {}\r\n{}\r\n\

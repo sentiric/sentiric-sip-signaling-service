@@ -3,8 +3,7 @@ set -e
 set -o pipefail
 
 # Bu script, Docker Compose için son .env dosyasını oluşturur.
-# İki aşamalı bir "derleyici" gibi çalışarak hem değişkenleri çözer
-# hem de okunabilirlik için kaynak dosya yorumlarını korur.
+# Sadece temel Bash özelliklerini kullanarak değişkenleri güvenilir bir şekilde çözer.
 
 PROFILE=${1:-dev}
 
@@ -19,6 +18,7 @@ OUTPUT_FILE="${INFRA_DIR}/.env.generated"
 PROFILE_FILE="${CONFIG_DIR}/profiles/${PROFILE}.env"
 TEMP_ENV_FILE=$(mktemp)
 
+# Script sonlandığında geçici dosyayı sil
 trap 'rm -f "$TEMP_ENV_FILE"' EXIT
 
 if [ ! -f "$PROFILE_FILE" ]; then
@@ -28,72 +28,36 @@ fi
 
 echo "🔧 Yapılandırma dosyası '${OUTPUT_FILE}' oluşturuluyor (Profil: ${PROFILE})..."
 
-# --- AŞAMA 1: Tüm .env parçalarını, başlıklarıyla birlikte, geçici bir dosyada topla ---
+# --- AŞAMA 1: Gerekli tüm .env parçalarını tek bir geçici dosyada birleştir ---
+
+# Önce dinamik değişkenleri ekle
+echo "# Dynamically added by Orchestrator (Pre-resolution)" > "$TEMP_ENV_FILE"
+DETECTED_LAN_IP=$(ip -4 route get 1.1.1.1 | awk '{print $7; exit}')
+echo "DETECTED_LAN_IP=${DETECTED_LAN_IP:-127.0.0.1}" >> "$TEMP_ENV_FILE"
+echo "TAG=${TAG:-latest}" >> "$TEMP_ENV_FILE"
+echo "CONFIG_REPO_PATH=../sentiric-config" >> "$TEMP_ENV_FILE"
+echo "CERTIFICATES_REPO_PATH=../sentiric-certificates" >> "$TEMP_ENV_FILE"
+echo "ASSETS_REPO_PATH=../sentiric-assets" >> "$TEMP_ENV_FILE"
+
+# Sonra profil dosyasını oku ve 'source' komutlarını işle
 while IFS= read -r line || [[ -n "$line" ]]; do
     line=$(echo "$line" | tr -d '\r')
+    # Sadece 'source' ile başlayan satırları işle
     if [[ $line == source* ]]; then
         relative_path=$(echo "$line" | cut -d' ' -f2)
         source_file="${CONFIG_DIR}/${relative_path}"
         if [ -f "$source_file" ]; then
-            # DÜZELTME: Yorum başlığını ve içeriği geçici dosyaya ekle
             echo -e "\n# Included from: ${relative_path}" >> "$TEMP_ENV_FILE"
-            (cat "$source_file" | tr -d '\r' | grep -vE '^\s*#' || true) >> "$TEMP_ENV_FILE"
+            # Yorum olmayan ve boş olmayan satırları ekle
+            grep -vE '^\s*(#|$)' "$source_file" | tr -d '\r' >> "$TEMP_ENV_FILE"
         fi
     fi
 done < "$PROFILE_FILE"
 
-# SECRETS_FILE="${CONFIG_DIR}/external/secrets.env"
-# if [ -f "$SECRETS_FILE" ]; then
-#     echo -e "\n# Included from: external/secrets.env" >> "$TEMP_ENV_FILE"
-#     (cat "$SECRETS_FILE" | tr -d '\r' | grep -vE '^\s*#|^\s*$' || true) >> "$TEMP_ENV_FILE"
-# fi
-
-# --- AŞAMA 2: Değişkenleri çöz ve nihai dosyayı oluştur ---
-
-# Geçici dosyayı oku ve değişkenleri çözerek bir "çözülmüş değişken haritası" oluştur.
-# Bu harita sadece DEĞİŞKEN=değer formatında olacak.
-RESOLVED_VARS=$(env -i bash -c "set -a; source '$TEMP_ENV_FILE'; env" | grep -E '^[A-Z_][A-Z0_9_]*=' | grep -vE '^(_|PWD|SHLVL)=' || true)
-
-# Şimdi, yorumları içeren orijinal geçici dosyayı oku ve değişkenleri çözülmüş olanlarla değiştir.
-# Bu, yorumları ve yapıyı korurken değerleri günceller.
-awk -v vars="$RESOLVED_VARS" '
-BEGIN {
-    # Çözülmüş değişkenleri bir diziye ata
-    split(vars, arr, "\n")
-    for (i in arr) {
-        split(arr[i], pair, "=")
-        resolved[pair[1]] = substr(arr[i], length(pair[1]) + 2)
-    }
-}
-/^[A-Z_][A-Z0_9_]*=/ {
-    # Bir değişken satırıyla karşılaşırsak
-    split($0, pair, "=")
-    key = pair[1]
-    if (key in resolved) {
-        # Eğer bu değişken çözülmüşler listesinde varsa, çözülmüş değeri yazdır
-        print key "=" resolved[key]
-    } else {
-        # Yoksa, orijinal satırı yazdır
-        print $0
-    }
-    next
-}
-{
-    # Değişken olmayan (yorum, boş satır vb.) her şeyi olduğu gibi yazdır
-    print $0
-}' "$TEMP_ENV_FILE" > "$OUTPUT_FILE"
-
-
-# --- Dinamik Değişkenleri Sona Ekle ---
-{
-    echo ""
-    echo "# Dynamically added by Orchestrator"
-    DETECTED_IP=$(hostname -I | awk '{print $1}' || echo "127.0.0.1")
-    echo "DETECTED_IP=${DETECTED_IP}"
-    echo "TAG=${TAG:-latest}"
-    echo "CONFIG_REPO_PATH=../sentiric-config"
-} >> "$OUTPUT_FILE"
+# --- AŞAMA 2: Birleştirilmiş dosyayı kullanarak tüm değişkenleri çöz ve nihai dosyayı oluştur ---
+# envsubst, bir metindeki ${VAR} veya $VAR ifadelerini ortam değişkenleriyle değiştiren standart bir araçtır.
+# Bu en güvenilir yöntemdir.
+( set -a; source "$TEMP_ENV_FILE"; envsubst < "$TEMP_ENV_FILE" > "$OUTPUT_FILE" )
 
 echo "✅ Yapılandırma başarıyla oluşturuldu."
-# Mevcut scriptin sonuna bu satırı ekleyin:
-chmod +x "$INFRA_DIR/scripts/restart-services.sh"
+chmod +x "$INFRA_DIR/scripts/restart-services.sh" 2>/dev/null || true

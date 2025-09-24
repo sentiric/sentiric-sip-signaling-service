@@ -36,6 +36,7 @@ pub struct PlatformConfig {
     // --- BU SERVİSE ÖZEL AYARLAR ---
     pub sip_signaling_udp_port: u16,
     pub sip_signaling_realm: String,
+    pub sip_signaling_public_ip: String,
     pub sip_signaling_cert_path: String,
     pub sip_signaling_key_path: String,
 }
@@ -75,6 +76,7 @@ pub struct AppConfig {
     
     pub sip_listen_addr: SocketAddr,
     pub sip_realm: String,
+    pub sip_public_ip: String, // YENİ ALAN
     
     pub media_service_public_ip: String,
     pub media_service_url: String,
@@ -98,6 +100,7 @@ impl From<Arc<PlatformConfig>> for AppConfig {
                 .parse()
                 .expect("Geçersiz SIP dinleme adresi"),
             sip_realm: pc.sip_signaling_realm.clone(),
+            sip_public_ip: pc.sip_signaling_public_ip.clone(), // YENİ ATAMA
             media_service_public_ip: pc.media_service_public_ip.clone(),
             media_service_url: pc.media_service_target_grpc_url.clone(),
             dialplan_service_url: pc.dialplan_service_target_grpc_url.clone(),
