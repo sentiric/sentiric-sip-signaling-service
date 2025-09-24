@@ -42,13 +42,10 @@ MicroSIP gibi bazı SIP istemcileri, bu değeri "Domain" olarak adlandırılan b
 
 ## 🚀 Yerel Geliştirme
 
-Bu servis, bir mikroservis mimarisinin merkezi bir parçasıdır ve tek başına tam işlevsel olarak **çalışmaz**. Geliştirme için en kolay yöntem **Docker Compose** kullanmaktır.
+1.  **Bağımlılıkları Yükleyin:**
+2.  **Ortam Değişkenlerini Ayarlayın:** `.env.example` dosyasını `.env` olarak kopyalayın ve gerekli değişkenleri doldurun.
+3.  **Servisi Çalıştırın:**
 
-1.  **Sistemi Docker Compose ile Başlatın:**
-    ```bash
-    # Ana proje dizininden (sentiric-infrastructure) çalıştırın
-    make start PROFILE=dev SERVICE=sip-signaling-service
-    ```
 ---
 ## 🏛️ Anayasal Konum
 
