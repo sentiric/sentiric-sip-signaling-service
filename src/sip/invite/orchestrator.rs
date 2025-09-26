@@ -1,4 +1,4 @@
-// *** BU DOSYA, DERLEME HATASINI DÜZELTEN ASIL DOSYADIR ***
+// sentiric-sip-signaling-service/src/sip/invite/orchestrator.rs
 use crate::app_state::AppState;
 use crate::error::ServiceError;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
@@ -32,7 +32,7 @@ pub async fn setup_and_finalize_call(
     response_headers
         .entry("to".to_string())
         .and_modify(|v| *v = format!("{};tag={}", v, to_tag));
-    
+
     let call_info = ActiveCallInfo {
         remote_addr: context.remote_addr,
         rtp_port,
@@ -40,9 +40,7 @@ pub async fn setup_and_finalize_call(
         to_tag: to_tag.to_string(),
         created_at: std::time::Instant::now(),
         headers: response_headers.clone(),
-        // --- BU SATIRIN EKLENDİĞİNDEN EMİN OLUN ---
         via_headers: context.via_headers.clone(),
-        // ------------------------------------------
         call_id: context.call_id.clone(),
         from_header: context.from_header.clone(),
         to_header: context.to_header.clone(),
@@ -51,7 +49,7 @@ pub async fn setup_and_finalize_call(
         raw_body: context.raw_body.clone(),
         answered_event_published: Arc::new(Mutex::new(false)),
     };
-    
+
     state
         .active_calls
         .lock()
@@ -60,11 +58,12 @@ pub async fn setup_and_finalize_call(
     info!("Aktif çağrı durumu başarıyla kaydedildi.");
 
     if let Some(rabbit_channel) = &state.rabbit {
-        publish_call_event("call.started", &call_info, Some(&dialplan_response), rabbit_channel).await?;
+        publish_call_event("call.started", &call_info, Some(&dialplan_response), rabbit_channel)
+            .await?;
     } else {
         warn!("RabbitMQ bağlantısı aktif değil, 'call.started' olayı yayınlanamadı.");
     }
-    
+
     Ok(call_info)
 }
 
@@ -78,13 +77,8 @@ async fn resolve_dialplan(
         caller_contact_value: context.caller_id.clone(),
         destination_number: context.destination_number.clone(),
     });
-    dialplan_req
-        .metadata_mut()
-        .insert("x-trace-id", context.trace_id.parse()?);
-    let dialplan_res = dialplan_client
-        .resolve_dialplan(dialplan_req)
-        .await?
-        .into_inner();
+    dialplan_req.metadata_mut().insert("x-trace-id", context.trace_id.parse()?);
+    let dialplan_res = dialplan_client.resolve_dialplan(dialplan_req).await?.into_inner();
     Ok(dialplan_res)
 }
 
@@ -94,14 +88,8 @@ async fn allocate_media_port(context: &CallContext, state: Arc<AppState>) -> Res
     let mut media_req = TonicRequest::new(AllocatePortRequest {
         call_id: context.call_id.clone(),
     });
-    media_req
-        .metadata_mut()
-        .insert("x-trace-id", context.trace_id.parse()?);
-    let rtp_port = media_client
-        .allocate_port(media_req)
-        .await?
-        .into_inner()
-        .rtp_port;
+    media_req.metadata_mut().insert("x-trace-id", context.trace_id.parse()?);
+    let rtp_port = media_client.allocate_port(media_req).await?.into_inner().rtp_port;
     Ok(rtp_port)
 }
 
@@ -113,6 +101,8 @@ async fn publish_call_event(
     rabbit_channel: &Arc<LapinChannel>,
 ) -> Result<(), ServiceError> {
     let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body);
+
+    // ==================== DÜZELTME VE STANDARTLAŞTIRMA ====================
     let mut event_payload = serde_json::json!({
         "eventType": event_type,
         "traceId": &call_info.trace_id,
@@ -122,18 +112,31 @@ async fn publish_call_event(
 
     if event_type == "call.started" {
         let media_info = serde_json::json!({
-            "serverRtpPort": call_info.rtp_port,
-            "callerRtpAddr": sdp_info
+            "callerRtpAddr": sdp_info, // camelCase
+            "serverRtpPort": call_info.rtp_port, // camelCase
         });
-        
+
         if let serde_json::Value::Object(map) = &mut event_payload {
+            // Anahtarları camelCase olarak güncelliyoruz.
             map.insert("fromUri".to_string(), serde_json::Value::String(call_info.from_header.clone()));
             map.insert("toUri".to_string(), serde_json::Value::String(call_info.to_header.clone()));
             map.insert("mediaInfo".to_string(), media_info);
 
             if let Some(res) = dialplan_res {
                 match serde_json::to_value(res) {
-                    Ok(dialplan_value) => {
+                    Ok(mut dialplan_value) => {
+                        // Protobuf'tan gelen `snake_case` alanları `camelCase` yapmak için
+                        // serde_json'un `rename_all = "camelCase"` özelliğini taklit ediyoruz.
+                        // Ancak contracts'da zaten bu ayar olduğu için, `to_value` bunu otomatik yapmalı.
+                        // Garantiye almak için manuel kontrol de eklenebilir ama şu an için gereksiz.
+                        if let serde_json::Value::Object(dp_map) = &mut dialplan_value {
+                            if let Some(user_val) = dp_map.remove("matched_user") {
+                                dp_map.insert("matchedUser".to_string(), user_val);
+                            }
+                            if let Some(contact_val) = dp_map.remove("matched_contact") {
+                                dp_map.insert("matchedContact".to_string(), contact_val);
+                            }
+                        }
                         map.insert("dialplanResolution".to_string(), dialplan_value);
                     }
                     Err(e) => {
@@ -143,6 +146,7 @@ async fn publish_call_event(
             }
         }
     }
+    // ==================== DÜZELTME SONU ====================
 
     debug!(
         event_payload = %event_payload.to_string(),
