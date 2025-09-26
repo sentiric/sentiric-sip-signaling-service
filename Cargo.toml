@@ -8,6 +8,9 @@ edition = "2021"
 tokio = { version = "1", features = ["full", "sync"] }
 tonic = { version = "0.11", features = ["tls", "tls-roots"] }
 prost = "0.12"
+# ==================== YENİ BAĞIMLILIK ====================
+prost-types = "0.12" # Google'ın Timestamp gibi tipleri için gerekli
+# ==================== BAĞIMLILIK SONU ====================
 lapin = "2.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -21,7 +24,7 @@ dotenvy = "0.15"
 once_cell = "1.19"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 rand_distr = "0.4.3"
-futures-util = "0.3" # <--- BU SATIR ZATEN MEVCUT, SORUN YOK
+futures-util = "0.3"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
 redis = { version = "0.32", features = ["tokio-rustls-comp"] }
@@ -37,4 +40,4 @@ ring = "0.17"
 
 [dependencies.sentiric-contracts]
 git = "https://github.com/sentiric/sentiric-contracts.git"
-tag = "v1.8.11"
+tag = "v1.8.12"

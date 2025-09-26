@@ -6,12 +6,18 @@ use crate::sip::call_context::CallContext;
 use crate::sip::utils::extract_sdp_media_info_from_body;
 use crate::state::ActiveCallInfo;
 use lapin::{options::*, BasicProperties, Channel as LapinChannel};
+use prost_types::Timestamp;
 use rand::Rng;
+// ==================== DÜZELTİLMİŞ IMPORT'LAR ====================
 use sentiric_contracts::sentiric::{
     dialplan::v1::{ResolveDialplanRequest, ResolveDialplanResponse},
+    // Hatalı `call_started_event::` kısmı kaldırıldı.
+    event::v1::{CallStartedEvent, MediaInfo},
     media::v1::AllocatePortRequest,
 };
+// ==================== IMPORT SONU ====================
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Mutex;
 use tonic::Request as TonicRequest;
 use tracing::{debug, info, instrument, warn};
@@ -100,56 +106,34 @@ async fn publish_call_event(
     dialplan_res: Option<&ResolveDialplanResponse>,
     rabbit_channel: &Arc<LapinChannel>,
 ) -> Result<(), ServiceError> {
-    let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body);
-
-    // ==================== DÜZELTME VE STANDARTLAŞTIRMA ====================
-    let mut event_payload = serde_json::json!({
-        "eventType": event_type,
-        "traceId": &call_info.trace_id,
-        "callId": &call_info.call_id,
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    });
-
-    if event_type == "call.started" {
-        let media_info = serde_json::json!({
-            "callerRtpAddr": sdp_info, // camelCase
-            "serverRtpPort": call_info.rtp_port, // camelCase
-        });
-
-        if let serde_json::Value::Object(map) = &mut event_payload {
-            // Anahtarları camelCase olarak güncelliyoruz.
-            map.insert("fromUri".to_string(), serde_json::Value::String(call_info.from_header.clone()));
-            map.insert("toUri".to_string(), serde_json::Value::String(call_info.to_header.clone()));
-            map.insert("mediaInfo".to_string(), media_info);
-
-            if let Some(res) = dialplan_res {
-                match serde_json::to_value(res) {
-                    Ok(mut dialplan_value) => {
-                        // Protobuf'tan gelen `snake_case` alanları `camelCase` yapmak için
-                        // serde_json'un `rename_all = "camelCase"` özelliğini taklit ediyoruz.
-                        // Ancak contracts'da zaten bu ayar olduğu için, `to_value` bunu otomatik yapmalı.
-                        // Garantiye almak için manuel kontrol de eklenebilir ama şu an için gereksiz.
-                        if let serde_json::Value::Object(dp_map) = &mut dialplan_value {
-                            if let Some(user_val) = dp_map.remove("matched_user") {
-                                dp_map.insert("matchedUser".to_string(), user_val);
-                            }
-                            if let Some(contact_val) = dp_map.remove("matched_contact") {
-                                dp_map.insert("matchedContact".to_string(), contact_val);
-                            }
-                        }
-                        map.insert("dialplanResolution".to_string(), dialplan_value);
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "ResolveDialplanResponse JSON'a serileştirilemedi.");
-                    }
-                }
-            }
-        }
-    }
-    // ==================== DÜZELTME SONU ====================
-
+    let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body).unwrap_or_default();
+    
+    let event_payload_str = if event_type == "call.started" && dialplan_res.is_some() {
+        let event = CallStartedEvent {
+            event_type: event_type.to_string(),
+            trace_id: call_info.trace_id.clone(),
+            call_id: call_info.call_id.clone(),
+            from_uri: call_info.from_header.clone(),
+            to_uri: call_info.to_header.clone(),
+            timestamp: Some(Timestamp::from(SystemTime::now())),
+            dialplan_resolution: dialplan_res.cloned(),
+            media_info: Some(MediaInfo {
+                caller_rtp_addr: sdp_info,
+                server_rtp_port: call_info.rtp_port,
+            }),
+        };
+        serde_json::to_string(&event)?
+    } else {
+        serde_json::to_string(&serde_json::json!({
+            "eventType": event_type,
+            "traceId": &call_info.trace_id,
+            "callId": &call_info.call_id,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }))?
+    };
+    
     debug!(
-        event_payload = %event_payload.to_string(),
+        event_payload = %event_payload_str,
         "{} olayı yayınlanıyor (tam içerik).", event_type
     );
     
@@ -159,8 +143,8 @@ async fn publish_call_event(
         RABBITMQ_EXCHANGE_NAME,
         event_type,
         BasicPublishOptions::default(),
-        event_payload.to_string().as_bytes(),
-        BasicProperties::default().with_delivery_mode(2),
+        event_payload_str.as_bytes(),
+        BasicProperties::default().with_delivery_mode(2).with_content_type("application/json".into()),
     ).await?.await?;
     
     Ok(())

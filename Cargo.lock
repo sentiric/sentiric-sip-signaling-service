@@ -1249,7 +1249,7 @@ dependencies = [
  "httpdate",
  "itoa",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.4.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2550,8 +2550,8 @@ dependencies = [
 
 [[package]]
 name = "sentiric-contracts"
-version = "1.8.11"
-source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.8.11#f13a70333b89da317b49e2f910b33247ed953859"
+version = "1.8.12"
+source = "git+https://github.com/sentiric/sentiric-contracts.git?tag=v1.8.12#da2925d76ce0145542879f21a09ca3c7ffb7af86"
 dependencies = [
  "prost",
  "prost-types",
@@ -2574,6 +2574,7 @@ dependencies = [
  "md5",
  "once_cell",
  "prost",
+ "prost-types",
  "rand 0.8.5",
  "rand_distr",
  "redis",
@@ -2716,16 +2717,6 @@ checksum = "9f7916fc008ca5542385b89a3d3ce689953c143e9304a9bf8beec1de48994c0d"
 dependencies = [
  "libc",
  "winapi",
-]
-
-[[package]]
-name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
 ]
 
 [[package]]

@@ -61,7 +61,7 @@ pub struct AppConfig {
     pub sip_listen_addr: SocketAddr,
     pub sip_realm: String,
     pub sip_public_ip: String, // Bu satırın varlığı kritik
-    pub media_service_public_ip: String,
+    pub media_service_public_ip: String, // Bu tanım aynı kriterik olan sip_public_ip gibi netleşmesi ve sağlamlaştırılması gerek.
     pub media_service_url: String,
     pub dialplan_service_url: String,
     pub user_service_url: String,
