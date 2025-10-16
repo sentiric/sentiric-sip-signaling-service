@@ -126,7 +126,7 @@ fn spawn_udp_listener(app_state: Arc<AppState>, sock: Arc<UdpSocket>) -> tokio::
 fn spawn_grpc_server(app_state: Arc<AppState>, sock: Arc<UdpSocket>, config: Arc<AppConfig>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let grpc_service = MySipSignalingService { app_state, sock };
-        let grpc_port_str = env::var("SIP_SIGNALING_GRPC_PORT").unwrap_or_else(|_| "13021".to_string());
+        let grpc_port_str = env::var("SIP_SIGNALING_SERVICE_GRPC_PORT").unwrap_or_else(|_| "13021".to_string());
         let addr = format!("[::]:{}", grpc_port_str).parse().unwrap();
         
         let tls_config = match load_tls_config(&config).await {

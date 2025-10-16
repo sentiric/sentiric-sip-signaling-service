@@ -34,11 +34,11 @@ Bu servis, dış dünyanın karmaşık SIP protokol detaylarından (NAT, çoklu 
 
 ### **Önemli Kavram: SIP Realm**
 
-Platformumuzda, `SIP_SIGNALING_REALM` ortam değişkeni (örn: `sentiric_demo`), kimlik doğrulama işlemlerinde kullanılan mantıksal "bölgeyi" tanımlar. Bu, SIP standardındaki `realm` parametresine karşılık gelir.
+Platformumuzda, `SIP_SIGNALING_SERVICE_REALM` ortam değişkeni (örn: `sentiric_demo`), kimlik doğrulama işlemlerinde kullanılan mantıksal "bölgeyi" tanımlar. Bu, SIP standardındaki `realm` parametresine karşılık gelir.
 
 MicroSIP gibi bazı SIP istemcileri, bu değeri "Domain" olarak adlandırılan bir alana girmenizi isteyebilir. Ancak bu, paketin gönderileceği "SIP Sunucusu" (bizim `sip-gateway` IP adresimiz) ile karıştırılmamalıdır. Bizim mimarimizde bu iki kavram nettir:
 *   **SIP Sunucusu:** `sip-gateway`'in genel IP adresi.
-*   **SIP Realm/Domain:** `SIP_SIGNALING_REALM` değişkeni ile tanımlanan kimlik doğrulama alanı.
+*   **SIP Realm/Domain:** `SIP_SIGNALING_SERVICE_REALM` değişkeni ile tanımlanan kimlik doğrulama alanı.
 
 ## 🚀 Yerel Geliştirme
 

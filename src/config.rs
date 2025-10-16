@@ -26,11 +26,11 @@ pub struct PlatformConfig {
     pub user_service_target_grpc_url: String,
     pub dialplan_service_target_grpc_url: String,
     // --- BU SERVİSE ÖZEL AYARLAR ---
-    pub sip_signaling_udp_port: u16,
-    pub sip_signaling_realm: String,
-    pub sip_signaling_public_ip: String, // Bu satırın varlığı kritik
-    pub sip_signaling_cert_path: String,
-    pub sip_signaling_key_path: String,
+    pub sip_signaling_service_sip_port: u16,
+    pub sip_signaling_service_realm: String,
+    pub sip_signaling_service_public_ip: String, // Bu satırın varlığı kritik
+    pub sip_signaling_service_cert_path: String,
+    pub sip_signaling_service_key_path: String,
 }
 
 impl PlatformConfig {
@@ -75,14 +75,14 @@ impl From<Arc<PlatformConfig>> for AppConfig {
             env: pc.env.clone(),
             service_version: pc.service_version.clone(),
             rust_log: pc.rust_log.clone(),
-            cert_path: pc.sip_signaling_cert_path.clone(),
-            key_path: pc.sip_signaling_key_path.clone(),
+            cert_path: pc.sip_signaling_service_cert_path.clone(),
+            key_path: pc.sip_signaling_service_key_path.clone(),
             ca_path: pc.grpc_tls_ca_path.clone(),
-            sip_listen_addr: format!("0.0.0.0:{}", pc.sip_signaling_udp_port)
+            sip_listen_addr: format!("0.0.0.0:{}", pc.sip_signaling_service_sip_port)
                 .parse()
                 .expect("Geçersiz SIP dinleme adresi"),
-            sip_realm: pc.sip_signaling_realm.clone(),
-            sip_public_ip: pc.sip_signaling_public_ip.clone(), // Bu atama doğru
+            sip_realm: pc.sip_signaling_service_realm.clone(),
+            sip_public_ip: pc.sip_signaling_service_public_ip.clone(),
             media_service_public_ip: pc.media_service_public_ip.clone(),
             media_service_url: pc.media_service_target_grpc_url.clone(),
             dialplan_service_url: pc.dialplan_service_target_grpc_url.clone(),
