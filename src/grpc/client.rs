@@ -10,7 +10,7 @@ use sentiric_contracts::sentiric::{
 use std::error::Error;
 use std::time::Duration;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
-use tracing::{info, instrument};
+use tracing::{info, instrument, warn};
 
 #[instrument(name = "grpc_client_setup", skip(config))]
 pub async fn create_all_grpc_clients(config: &AppConfig) -> Result<GrpcClients, ServiceError> {
@@ -56,16 +56,27 @@ async fn create_secure_grpc_channel(
     server_name: &str,
     config: &AppConfig,
 ) -> Result<Channel, Box<dyn Error + Send + Sync>> {
-    // 1. İstemcinin (bu servis) kendi kimliğini yükle
+    // 1. URL Normalizasyonu (Critical Fix for Double-Scheme Issue)
+    // Gelen URL zaten "https://" içeriyorsa dokunma, "http://" ise "https://" yap, yoksa ekle.
+    let target_url = if url.starts_with("https://") {
+        url.to_string()
+    } else if url.starts_with("http://") {
+        warn!(url, "Güvensiz şema (http) algılandı, HTTPS'e zorlanıyor.");
+        url.replace("http://", "https://")
+    } else {
+        format!("https://{}", url)
+    };
+
+    // 2. İstemcinin (bu servis) kendi kimliğini yükle
     let cert = tokio::fs::read(&config.cert_path).await?;
     let key = tokio::fs::read(&config.key_path).await?;
     let client_identity = Identity::from_pem(cert, key);
 
-    // 2. Güvenilecek Kök Sertifika Otoritesini (CA) yükle
+    // 3. Güvenilecek Kök Sertifika Otoritesini (CA) yükle
     let ca_cert = tokio::fs::read(&config.ca_path).await?;
     let server_ca_certificate = Certificate::from_pem(ca_cert);
 
-    // 3. Tonic'in kendi TLS yapılandırmasını oluştur
+    // 4. Tonic'in kendi TLS yapılandırmasını oluştur
     let tls_config = ClientTlsConfig::new()
         // Sunucu sertifikasındaki ismin bu olması gerektiğini belirt (doğrulama için kritik)
         .domain_name(server_name)
@@ -74,14 +85,13 @@ async fn create_secure_grpc_channel(
         // Kendi kimliğimizi (sertifika + anahtar) belirt
         .identity(client_identity);
 
-    // 4. Güvenli kanalı oluştur ve bağlan
-    let endpoint = Channel::from_shared(format!("https://{}", url))?
+    // 5. Güvenli kanalı oluştur ve bağlan
+    let endpoint = Channel::from_shared(target_url.clone())?
         .connect_timeout(Duration::from_secs(5))
         .tls_config(tls_config)?;
 
-    info!(url=%url, server_name=%server_name, "Güvenli gRPC kanalına bağlanılıyor...");
+    info!(url=%target_url, server_name=%server_name, "Güvenli gRPC kanalına bağlanılıyor...");
     let channel = endpoint.connect().await?;
-    info!(url=%url, "gRPC bağlantısı başarılı.");
+    info!(url=%target_url, "gRPC bağlantısı başarılı.");
     Ok(channel)
 }
-// --- DEĞİŞİKLİK SONU ---
