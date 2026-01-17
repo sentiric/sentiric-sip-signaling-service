@@ -10,7 +10,7 @@ use lapin::{options::*, BasicProperties, Channel as LapinChannel};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{ResolveDialplanRequest, ResolveDialplanResponse},
-    media::v1::AllocatePortRequest,
+    media::v1::{AllocatePortRequest, PlayAudioRequest}, // PlayAudioRequest EKLENDİ
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,6 +27,42 @@ pub async fn setup_and_finalize_call(
 
     let rtp_port = allocate_media_port(context, state.clone()).await?;
     info!(rtp_port, "Medya portu başarıyla ayrıldı.");
+
+    // --- YENİ EKLENEN KISIM: NAT DELME (HOLE PUNCHING) ---
+    // Operatörün SDP'sinden IP ve Portu bul
+    if let Some(target_addr) = extract_sdp_media_info_from_body(&context.raw_body) {
+        info!(target = %target_addr, "SDP'den hedef RTP adresi bulundu. NAT delme işlemi başlatılıyor...");
+        
+        // Media Service'e "Bu adrese boş bir ses paketi at" diyoruz.
+        // Bu sayede firewall açılacak ve operatör bize ses gönderebilecek.
+        // 'data:...' URI'si ile 100ms'lik sessizlik gönderiyoruz.
+        // (Base64 encoded 160 byte sessizlik - PCMU)
+        // let silence_uri = "data:audio/basic;base64,////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"; 
+        
+        // Media Service'e kısa, tatlı AI bip tonu gönderiyoruz.
+        // 60ms'lik yumuşak "Neural Pulse" (PCMU / 8kHz)
+        // Firewall açılır, ama rahatsız edici bip olmaz.
+        let silence_uri = "data:audio/basic;base64,/////////////////////////////////////////////6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+vr6+v";
+
+        let mut media_client = state.grpc.media.clone();
+        let play_req = TonicRequest::new(PlayAudioRequest {
+            audio_uri: silence_uri.to_string(),
+            server_rtp_port: rtp_port,
+            rtp_target_addr: target_addr.clone(),
+        });
+        
+        // Bu işlemi arka planda yap, ana akışı bloklama
+        tokio::spawn(async move {
+            if let Err(e) = media_client.play_audio(play_req).await {
+                warn!("NAT delme (PlayAudio) başarısız oldu: {}", e);
+            } else {
+                info!("NAT delme paketi gönderildi.");
+            }
+        });
+    } else {
+        warn!("SDP içinde geçerli RTP adresi bulunamadı. NAT delme yapılamıyor.");
+    }
+    // -----------------------------------------------------
 
     let mut response_headers = context.headers.clone();
     let to_tag: u32 = rand::thread_rng().gen();
@@ -103,10 +139,7 @@ async fn publish_call_event(
 ) -> Result<(), ServiceError> {
     let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body).unwrap_or_default();
     
-    // --- MANUEL JSON OLUŞTURMA (FIXED) ---
-    // Protobuf struct'ı (CallStartedEvent) kullanmıyoruz.
-    // Doğrudan serde_json::json! makrosu ile JSON oluşturuyoruz.
-    
+    // --- MANUEL JSON OLUŞTURMA ---
     let mut event_payload = serde_json::json!({
         "eventType": event_type,
         "traceId": &call_info.trace_id,
@@ -117,22 +150,17 @@ async fn publish_call_event(
     });
 
     if event_type == "call.started" {
-        // Media Info'yu JSON objesine ekle
         let media_info = serde_json::json!({
             "callerRtpAddr": sdp_info,
             "serverRtpPort": call_info.rtp_port,
         });
 
-        // Dialplan Resolution (Manual Mapping)
-        // ResolveDialplanResponse da Protobuf olduğu için serialize edilemez.
-        // Alanları tek tek çekip JSON'a koyuyoruz.
         let dialplan_json = if let Some(res) = dialplan_res {
              serde_json::json!({
                  "dialplanId": res.dialplan_id,
                  "tenantId": res.tenant_id,
                  "action": {
                      "action": res.action.as_ref().map(|a| &a.action).unwrap_or(&"".to_string()),
-                     // ActionData içindeki map'i alıyoruz
                      "actionData": res.action.as_ref()
                         .and_then(|a| a.action_data.as_ref())
                         .map(|d| &d.data)
@@ -143,15 +171,12 @@ async fn publish_call_event(
              serde_json::Value::Null
         };
 
-        // Ana JSON objesine alanları enjekte et
         if let serde_json::Value::Object(ref mut map) = event_payload {
             map.insert("mediaInfo".to_string(), media_info);
             map.insert("dialplanResolution".to_string(), dialplan_json);
         }
     }
     
-    // JSON nesnesini string'e çevir
-    // Burada hata almanız imkansız çünkü 'event_payload' serde_json::Value tipindedir ve Serialize implemente eder.
     let event_payload_str = serde_json::to_string(&event_payload)?;
     
     debug!(
