@@ -1,4 +1,5 @@
-// ========== DOSYA: sentiric-sip-signaling-service/src/sip/mod.rs (TAM VE GÜNCEL İÇERİK) ==========
+// sentiric-sip-signaling-service/src/sip/mod.rs
+
 pub mod ack;
 pub mod bye;
 pub mod call_context;

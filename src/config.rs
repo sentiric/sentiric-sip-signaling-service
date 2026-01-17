@@ -1,7 +1,7 @@
 // sentiric-sip-signaling-service/src/config.rs
 use anyhow::Result;
 use serde::Deserialize;
-use std::{env, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc}; 
 
 // ===================================================================
 //  Bölüm 1: Platform Seviyesi Yapılandırma
@@ -15,22 +15,26 @@ pub struct PlatformConfig {
     pub rust_log: String,
     #[serde(default = "default_version")]
     pub service_version: String,
-    // --- GENEL SERTİFİKA YOLLARI ---
+    
     pub grpc_tls_ca_path: String,
-    // --- BAĞIMLILIK URL'LERİ ---
     pub redis_url: String,
     pub rabbitmq_url: String,
-    // --- BAĞIMLI SERVİS HEDEFLERİ ---
-    pub media_service_public_ip: String, // Bu hala kalabilir, belki başka bir yerde kullanılır.
+    
     pub media_service_target_grpc_url: String,
     pub user_service_target_grpc_url: String,
     pub dialplan_service_target_grpc_url: String,
-    // --- BU SERVİSE ÖZEL AYARLAR ---
+    
     pub sip_signaling_service_sip_port: u16,
     pub sip_signaling_service_realm: String,
-    pub sip_signaling_service_public_ip: String, // Bu satırın varlığı kritik
+    // [KRİTİK] Dış IP
+    pub sip_signaling_service_public_ip: String,
+    
     pub sip_signaling_service_cert_path: String,
     pub sip_signaling_service_key_path: String,
+    
+    // Kullanılmayan alan için uyarıyı bastır veya kaldır (struct tanımında kalabilir)
+    #[allow(dead_code)]
+    pub media_service_public_ip: String,
 }
 
 impl PlatformConfig {
@@ -44,8 +48,8 @@ impl PlatformConfig {
 }
 
 fn default_env() -> String { "development".to_string() }
-fn default_rust_log() -> String { "info,h2=warn,hyper=warn".to_string() }
-fn default_version() -> String { env::var("SERVICE_VERSION").unwrap_or_else(|_| "0.1.0".to_string()) }
+fn default_rust_log() -> String { "info".to_string() }
+fn default_version() -> String { "1.0.0".to_string() }
 
 // ===================================================================
 //  Bölüm 2: Servise Özel Yapılandırma
@@ -60,13 +64,13 @@ pub struct AppConfig {
     pub ca_path: String,
     pub sip_listen_addr: SocketAddr,
     pub sip_realm: String,
-    pub sip_public_ip: String, // Bu satırın varlığı kritik
-    pub media_service_public_ip: String, // Bu tanım aynı kriterik olan sip_public_ip gibi netleşmesi ve sağlamlaştırılması gerek.
+    pub sip_public_ip: String, // Public IP burada saklanacak
     pub media_service_url: String,
     pub dialplan_service_url: String,
     pub user_service_url: String,
     pub rabbitmq_url: String,
     pub redis_url: String,
+
 }
 
 impl From<Arc<PlatformConfig>> for AppConfig {
@@ -80,10 +84,9 @@ impl From<Arc<PlatformConfig>> for AppConfig {
             ca_path: pc.grpc_tls_ca_path.clone(),
             sip_listen_addr: format!("0.0.0.0:{}", pc.sip_signaling_service_sip_port)
                 .parse()
-                .expect("Geçersiz SIP dinleme adresi"),
+                .expect("Geçersiz SIP portu"),
             sip_realm: pc.sip_signaling_service_realm.clone(),
             sip_public_ip: pc.sip_signaling_service_public_ip.clone(),
-            media_service_public_ip: pc.media_service_public_ip.clone(),
             media_service_url: pc.media_service_target_grpc_url.clone(),
             dialplan_service_url: pc.dialplan_service_target_grpc_url.clone(),
             user_service_url: pc.user_service_target_grpc_url.clone(),

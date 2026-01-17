@@ -1,4 +1,5 @@
 // sentiric-sip-signaling-service/src/sip/invite/orchestrator.rs
+
 use crate::app_state::AppState;
 use crate::error::ServiceError;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
@@ -6,18 +7,12 @@ use crate::sip::call_context::CallContext;
 use crate::sip::utils::extract_sdp_media_info_from_body;
 use crate::state::ActiveCallInfo;
 use lapin::{options::*, BasicProperties, Channel as LapinChannel};
-use prost_types::Timestamp;
 use rand::Rng;
-// ==================== DÜZELTİLMİŞ IMPORT'LAR ====================
 use sentiric_contracts::sentiric::{
     dialplan::v1::{ResolveDialplanRequest, ResolveDialplanResponse},
-    // Hatalı `call_started_event::` kısmı kaldırıldı.
-    event::v1::{CallStartedEvent, MediaInfo},
     media::v1::AllocatePortRequest,
 };
-// ==================== IMPORT SONU ====================
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::Mutex;
 use tonic::Request as TonicRequest;
 use tracing::{debug, info, instrument, warn};
@@ -108,29 +103,56 @@ async fn publish_call_event(
 ) -> Result<(), ServiceError> {
     let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body).unwrap_or_default();
     
-    let event_payload_str = if event_type == "call.started" && dialplan_res.is_some() {
-        let event = CallStartedEvent {
-            event_type: event_type.to_string(),
-            trace_id: call_info.trace_id.clone(),
-            call_id: call_info.call_id.clone(),
-            from_uri: call_info.from_header.clone(),
-            to_uri: call_info.to_header.clone(),
-            timestamp: Some(Timestamp::from(SystemTime::now())),
-            dialplan_resolution: dialplan_res.cloned(),
-            media_info: Some(MediaInfo {
-                caller_rtp_addr: sdp_info,
-                server_rtp_port: call_info.rtp_port,
-            }),
+    // --- MANUEL JSON OLUŞTURMA (FIXED) ---
+    // Protobuf struct'ı (CallStartedEvent) kullanmıyoruz.
+    // Doğrudan serde_json::json! makrosu ile JSON oluşturuyoruz.
+    
+    let mut event_payload = serde_json::json!({
+        "eventType": event_type,
+        "traceId": &call_info.trace_id,
+        "callId": &call_info.call_id,
+        "fromUri": &call_info.from_header,
+        "toUri": &call_info.to_header,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+
+    if event_type == "call.started" {
+        // Media Info'yu JSON objesine ekle
+        let media_info = serde_json::json!({
+            "callerRtpAddr": sdp_info,
+            "serverRtpPort": call_info.rtp_port,
+        });
+
+        // Dialplan Resolution (Manual Mapping)
+        // ResolveDialplanResponse da Protobuf olduğu için serialize edilemez.
+        // Alanları tek tek çekip JSON'a koyuyoruz.
+        let dialplan_json = if let Some(res) = dialplan_res {
+             serde_json::json!({
+                 "dialplanId": res.dialplan_id,
+                 "tenantId": res.tenant_id,
+                 "action": {
+                     "action": res.action.as_ref().map(|a| &a.action).unwrap_or(&"".to_string()),
+                     // ActionData içindeki map'i alıyoruz
+                     "actionData": res.action.as_ref()
+                        .and_then(|a| a.action_data.as_ref())
+                        .map(|d| &d.data)
+                        .unwrap_or(&std::collections::HashMap::new())
+                 }
+             })
+        } else {
+             serde_json::Value::Null
         };
-        serde_json::to_string(&event)?
-    } else {
-        serde_json::to_string(&serde_json::json!({
-            "eventType": event_type,
-            "traceId": &call_info.trace_id,
-            "callId": &call_info.call_id,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        }))?
-    };
+
+        // Ana JSON objesine alanları enjekte et
+        if let serde_json::Value::Object(ref mut map) = event_payload {
+            map.insert("mediaInfo".to_string(), media_info);
+            map.insert("dialplanResolution".to_string(), dialplan_json);
+        }
+    }
+    
+    // JSON nesnesini string'e çevir
+    // Burada hata almanız imkansız çünkü 'event_payload' serde_json::Value tipindedir ve Serialize implemente eder.
+    let event_payload_str = serde_json::to_string(&event_payload)?;
     
     debug!(
         event_payload = %event_payload_str,
