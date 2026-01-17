@@ -10,7 +10,7 @@ use lapin::{options::*, BasicProperties, Channel as LapinChannel};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
     dialplan::v1::{ResolveDialplanRequest, ResolveDialplanResponse},
-    media::v1::{AllocatePortRequest, PlayAudioRequest}, // PlayAudioRequest EKLENDİ
+    media::v1::{AllocatePortRequest, PlayAudioRequest},
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,16 +28,14 @@ pub async fn setup_and_finalize_call(
     let rtp_port = allocate_media_port(context, state.clone()).await?;
     info!(rtp_port, "Medya portu başarıyla ayrıldı.");
 
-    // --- YENİ EKLENEN KISIM: NAT DELME (HOLE PUNCHING) ---
-    // Operatörün SDP'sinden IP ve Portu bul
+    // --- NAT DELME (HOLE PUNCHING) BAŞLANGIÇ ---
     if let Some(target_addr) = extract_sdp_media_info_from_body(&context.raw_body) {
         info!(target = %target_addr, "SDP'den hedef RTP adresi bulundu. NAT delme işlemi başlatılıyor...");
         
-        // --- GÜVENLİ NAT DELME PAKETİ (Geçerli WAV Header'lı 20ms Sessizlik) ---
-        // Media Service (Symphonia) ham PCM'i tanıyamayabilir, bu yüzden header şart.
-        // Format: WAV, 8kHz, Mono, 16-bit PCM, 160 samples.
-        let silence_uri = "data:audio/wav;base64,UklGRi4AAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAAAAAD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/w==";
-
+        // 320 byte (160 sample * 2 byte) = 20ms saf sessizlik (0x00)
+        // Base64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+        let silence_uri = "data:audio/pcm;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+        
         let mut media_client = state.grpc.media.clone();
         let play_req = TonicRequest::new(PlayAudioRequest {
             audio_uri: silence_uri.to_string(),
@@ -45,18 +43,17 @@ pub async fn setup_and_finalize_call(
             rtp_target_addr: target_addr.clone(),
         });
         
-        // Bu işlemi arka planda yap, ana akışı bloklama
         tokio::spawn(async move {
             if let Err(e) = media_client.play_audio(play_req).await {
                 warn!("NAT delme (PlayAudio) başarısız oldu: {}", e);
             } else {
-                info!("NAT delme paketi gönderildi.");
+                info!("NAT delme paketi (Sessizlik) gönderildi.");
             }
         });
     } else {
         warn!("SDP içinde geçerli RTP adresi bulunamadı. NAT delme yapılamıyor.");
     }
-    // -----------------------------------------------------
+    // --- NAT DELME BİTİŞ ---
 
     let mut response_headers = context.headers.clone();
     let to_tag: u32 = rand::thread_rng().gen();
@@ -133,7 +130,7 @@ async fn publish_call_event(
 ) -> Result<(), ServiceError> {
     let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body).unwrap_or_default();
     
-    // --- MANUEL JSON OLUŞTURMA ---
+    // Manuel JSON (Protobuf Bypass)
     let mut event_payload = serde_json::json!({
         "eventType": event_type,
         "traceId": &call_info.trace_id,
