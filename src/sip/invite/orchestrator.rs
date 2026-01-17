@@ -6,6 +6,7 @@ use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::call_context::CallContext;
 use crate::sip::utils::extract_sdp_media_info_from_body;
 use crate::state::ActiveCallInfo;
+use base64::{engine::general_purpose, Engine as _}; // <--- YENİ IMPORT
 use lapin::{options::*, BasicProperties, Channel as LapinChannel};
 use rand::Rng;
 use sentiric_contracts::sentiric::{
@@ -32,13 +33,24 @@ pub async fn setup_and_finalize_call(
     if let Some(target_addr) = extract_sdp_media_info_from_body(&context.raw_body) {
         info!(target = %target_addr, "SDP'den hedef RTP adresi bulundu. NAT delme işlemi başlatılıyor...");
         
-        // 320 byte (160 sample * 2 byte) = 20ms saf sessizlik (0x00)
-        // Base64: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
-        let silence_uri = "data:audio/pcm;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+        // DİNAMİK SESSİZLİK ÜRETİMİ (Critical Fix)
+        // 20ms ses @ 8000Hz Mono 16-bit
+        // 20ms = 0.02s
+        // Sample Count = 8000 * 0.02 = 160 samples
+        // Byte Count = 160 samples * 2 bytes/sample = 320 bytes
+        let silence_bytes = vec![0u8; 320];
+        
+        // Base64 Encode (Standart, Padding dahil)
+        let silence_b64 = general_purpose::STANDARD.encode(&silence_bytes);
+        
+        // Data URI oluştur
+        // Media Service "raw pcm" olarak algılaması için data URI formatı kullanılır.
+        // session_utils.rs içinde RIFF header yoksa raw kabul eden mantık var.
+        let silence_uri = format!("data:audio/pcm;base64,{}", silence_b64);
         
         let mut media_client = state.grpc.media.clone();
         let play_req = TonicRequest::new(PlayAudioRequest {
-            audio_uri: silence_uri.to_string(),
+            audio_uri: silence_uri,
             server_rtp_port: rtp_port,
             rtp_target_addr: target_addr.clone(),
         });
@@ -47,7 +59,7 @@ pub async fn setup_and_finalize_call(
             if let Err(e) = media_client.play_audio(play_req).await {
                 warn!("NAT delme (PlayAudio) başarısız oldu: {}", e);
             } else {
-                info!("NAT delme paketi (Sessizlik) gönderildi.");
+                info!("NAT delme paketi (20ms Sessizlik) gönderildi.");
             }
         });
     } else {

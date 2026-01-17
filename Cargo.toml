@@ -8,7 +8,6 @@ edition = "2021"
 tokio = { version = "1", features = ["full", "sync"] }
 tonic = { version = "0.11", features = ["tls", "tls-roots"] }
 prost = "0.12"
-prost-types = "0.12"
 lapin = "2.3" # RabbitMQ
 redis = { version = "0.25", features = ["tokio-rustls-comp"] }
 
@@ -30,12 +29,13 @@ rand_distr = "0.4.3"
 futures-util = "0.3"
 lazy_static = "1.4.0"
 md5 = "0.8.0"
+base64 = "0.22" # <--- YENİ EKLENDİ (NAT Hole Punching için gerekli)
 
 # Security
 rustls = "0.23"
 rustls-pemfile = "2.1"
 ring = "0.17"
 
-# --- CORE LIBRARIES (YENİ) ---
+# --- CORE LIBRARIES ---
 sentiric-sip-core = { git = "https://github.com/sentiric/sentiric-sip-core.git", tag = "v1.0.0" }
 sentiric-contracts = { git = "https://github.com/sentiric/sentiric-contracts.git", tag = "v1.13.3" }
