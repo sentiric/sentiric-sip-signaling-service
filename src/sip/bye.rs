@@ -1,7 +1,10 @@
+// sentiric-sip-signaling-service/src/sip/bye.rs
+
 use crate::app_state::AppState;
 use crate::rabbitmq::connection::RABBITMQ_EXCHANGE_NAME;
 use crate::sip::responses;
 use crate::sip::utils::parse_sip_headers;
+use crate::sip::utils::extract_sdp_media_info_from_body; // Gerekirse ekleyin
 use lapin::{options::BasicPublishOptions, BasicProperties};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -27,23 +30,33 @@ pub async fn handle(
 
     if let Some(call_info) = state.active_calls.lock().await.remove(&call_id) {
         Span::current().record("trace_id", &call_info.trace_id as &str);
-        info!(port = call_info.rtp_port, "Çağrı kullanıcı tarafından sonlandırıldı, aktif çağrı kaydı silindi.");
+        info!(port = call_info.rtp_port, "Çağrı kullanıcı tarafından sonlandırıldı.");
 
         if let Some(rabbit_channel) = &state.rabbit {
+            
+            // --- GÜNCELLEME: MediaInfo Ekleme ---
+            let sdp_info = extract_sdp_media_info_from_body(&call_info.raw_body).unwrap_or_default();
+            
             let event_payload = serde_json::json!({
                 "eventType": "call.ended",
                 "traceId": call_info.trace_id,
                 "callId": call_id,
                 "reason": "normal_clearing_by_user",
-                "timestamp": chrono::Utc::now().to_rfc3339()
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                // YENİ: Agent servisin portu temizleyebilmesi için
+                "mediaInfo": {
+                    "callerRtpAddr": sdp_info,
+                    "serverRtpPort": call_info.rtp_port
+                }
             });
+            // ------------------------------------
 
             if let Err(e) = rabbit_channel.basic_publish(
                 RABBITMQ_EXCHANGE_NAME,
                 "call.ended",
                 BasicPublishOptions::default(),
                 event_payload.to_string().as_bytes(),
-                BasicProperties::default().with_delivery_mode(2),
+                BasicProperties::default().with_delivery_mode(2).with_content_type("application/json".into()),
             ).await {
                 error!(error = %e, "'call.ended' olayı yayınlanırken hata oluştu.");
             } else {
@@ -53,9 +66,8 @@ pub async fn handle(
             warn!("RabbitMQ bağlantısı aktif değil, 'call.ended' olayı yayınlanamadı.");
         }
         
-        warn!(port = call_info.rtp_port, "Port, agent'ın son işlemleri için açık bırakıldı. Karantina mekanizması temizleyecek.");
     } else {
-        warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı (muhtemelen agent tarafından zaten sonlandırılmıştı).");
+        warn!("BYE isteği alınan çağrı aktif çağrılar listesinde bulunamadı.");
     }
     Ok(())
 }
