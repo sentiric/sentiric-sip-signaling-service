@@ -37,9 +37,7 @@ services:
       - RUST_LOG=info,sentiric_sip_signaling_service=debug
 
       # --- Network (Internal) ---
-      # farklı zonelara çalılşması için ayrı compose?
-      #- SIP_SIGNALING_SERVICE_PUBLIC_IP=${ZONE_ONPREM_TR_ANT2_BACKBONE_IP}
-      - SIP_SIGNALING_SERVICE_PUBLIC_IP=100.87.231.9
+      - SIP_SIGNALING_SERVICE_PUBLIC_IP=${NODE_IP}
       - SIP_SIGNALING_SERVICE_HOST=sip-signaling-service
       - SIP_SIGNALING_SERVICE_DNS_NAME=${SIP_SIGNALING_SERVICE_HOST:-sip-signaling-service}.${DISCOVERY_DNS_SEARCH_DOMAIN:-service.sentiric.cloud}
       - SIP_SIGNALING_SERVICE_IPV4_ADDRESS=10.88.30.2
@@ -50,10 +48,9 @@ services:
       - SIP_SIGNALING_SERVICE_SIP_PORT=13024
       - SIP_SIGNALING_SERVICE_REALM="${PROJECT_NAME:-sentiric}_demo"
 
-      # sip public olarak, sip signaling ip gizlenmeli?
-      #- SIP_GATEWAY_SERVICE_PUBLIC_IP=${ZONE_GCP_US_CENTRAL1_PUBLIC_IP}
-      - SIP_SIGNALING_SERVICE_PUBLIC_IP=34.122.40.122
-      - SIP_SIGNALING_SERVICE_CONTACT_IP=100.87.231.9
+
+      - SIP_SIGNALING_SERVICE_PUBLIC_IP=${NODE_IP}
+      - SIP_SIGNALING_SERVICE_CONTACT_IP=${NODE_IP}
       - SIP_SIGNALING_SERVICE_ADVERTISED_PORT=13024
 
       # --- Dependencies ---
